@@ -2,9 +2,16 @@ const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
 const connectDB = require('./config/db');
+const cronJob = require('./config/cron');
 
 // Load env vars
 dotenv.config();
+
+// Start cron job in production to prevent server spin-down
+if (process.env.NODE_ENV === 'production') {
+  cronJob.start();
+  console.log('🔄 Cron job started - server will self-ping every 14 minutes');
+}
 
 // Connect to database
 connectDB();
