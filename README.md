@@ -37,7 +37,7 @@ npm install
 
 2. Edit `.env` and fill in your values:
    ```env
-   MONGODB_URI=mongodb+srv://your_username:your_password@cluster0.xxxxx.mongodb.net/thali_yuva_sangh?retryWrites=true&w=majority
+   MONGODB_URI=
    JWT_SECRET=your_super_secret_jwt_key_change_this_in_production
    PORT=3001
    ADMIN_EMAILS=admin1@thaliyuvasangh.org,admin2@thaliyuvasangh.org
