@@ -41,6 +41,7 @@ app.use((req, res, next) => {
 
 // Routes
 app.use('/api/auth', require('./routes/auth'));
+app.use('/api/family-tree', require('./routes/familyTree'));
 
 // Health check
 app.get('/api/health', (req, res) => {
