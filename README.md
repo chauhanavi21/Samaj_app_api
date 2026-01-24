@@ -40,7 +40,7 @@ npm install
    MONGODB_URI=
    JWT_SECRET=your_super_secret_jwt_key_change_this_in_production
    PORT=3001
-   ADMIN_EMAILS=admin1@thaliyuvasangh.org,admin2@thaliyuvasangh.org
+   ADMIN_EMAILS=
    ```
 
    **Important:**
