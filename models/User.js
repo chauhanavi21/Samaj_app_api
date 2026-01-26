@@ -32,9 +32,9 @@ const userSchema = new mongoose.Schema({
   },
   memberId: {
     type: String,
+    required: [true, 'Member ID is required'],
     trim: true,
     unique: true,
-    sparse: true, // Allow null values but unique if provided
   },
   createdAt: {
     type: Date,

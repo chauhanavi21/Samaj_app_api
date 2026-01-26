@@ -29,24 +29,22 @@ router.post('/signup', async (req, res) => {
     console.log('Member ID:', memberId);
 
     // Validation
-    if (!name || !email || !password) {
+    if (!name || !email || !password || !memberId) {
       console.log('❌ Validation failed: Missing required fields');
       return res.status(400).json({
         success: false,
-        message: 'Please provide name, email, and password',
+        message: 'Please provide name, email, password, and Member ID',
       });
     }
 
     // Check if memberId is already taken
-    if (memberId) {
-      const existingMemberId = await User.findOne({ memberId });
-      if (existingMemberId) {
-        console.log('❌ Member ID already exists:', memberId);
-        return res.status(400).json({
-          success: false,
-          message: 'Member ID already exists. Please use a different Member ID.',
-        });
-      }
+    const existingMemberId = await User.findOne({ memberId });
+    if (existingMemberId) {
+      console.log('❌ Member ID already exists:', memberId);
+      return res.status(400).json({
+        success: false,
+        message: 'Member ID already exists. Please use a different Member ID.',
+      });
     }
 
     // Check if user already exists
@@ -85,7 +83,7 @@ router.post('/signup', async (req, res) => {
         email: email.toLowerCase(),
         password,
         phone: phone || '',
-        memberId: memberId || undefined,
+        memberId: memberId.trim(),
         role,
       });
     } catch (createError) {
