@@ -91,7 +91,7 @@ router.get('/', async (req, res) => {
   try {
     const familyTrees = await FamilyTree.find({ createdBy: req.user.id })
       .sort({ createdAt: -1 })
-      .populate('createdBy', 'name email');
+      .populate('createdBy', 'name email memberId');
 
     res.json({
       success: true,
