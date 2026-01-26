@@ -1,6 +1,7 @@
 const express = require('express');
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
+const FamilyTree = require('../models/FamilyTree');
 const { protect } = require('../middleware/auth');
 
 const router = express.Router();
@@ -20,11 +21,12 @@ const generateToken = (id) => {
 // @access  Public
 router.post('/signup', async (req, res) => {
   try {
-    const { name, email, password, phone } = req.body;
+    const { name, email, password, phone, memberId } = req.body;
 
     console.log('\n=== SIGNUP ATTEMPT ===');
     console.log('Email:', email);
     console.log('Name:', name);
+    console.log('Member ID:', memberId);
 
     // Validation
     if (!name || !email || !password) {
@@ -33,6 +35,18 @@ router.post('/signup', async (req, res) => {
         success: false,
         message: 'Please provide name, email, and password',
       });
+    }
+
+    // Check if memberId is already taken
+    if (memberId) {
+      const existingMemberId = await User.findOne({ memberId });
+      if (existingMemberId) {
+        console.log('❌ Member ID already exists:', memberId);
+        return res.status(400).json({
+          success: false,
+          message: 'Member ID already exists. Please use a different Member ID.',
+        });
+      }
     }
 
     // Check if user already exists
@@ -71,6 +85,7 @@ router.post('/signup', async (req, res) => {
         email: email.toLowerCase(),
         password,
         phone: phone || '',
+        memberId: memberId || undefined,
         role,
       });
     } catch (createError) {
@@ -98,7 +113,23 @@ router.post('/signup', async (req, res) => {
       email: user.email,
       name: user.name,
       role: user.role,
+      memberId: user.memberId,
     });
+
+    // Automatically create a Family Tree entry for the new user
+    try {
+      await FamilyTree.create({
+        createdBy: user._id,
+        personName: user.name,
+        personPhone: user.phone || '',
+        // memberId is stored in User model, not FamilyTree
+      });
+      console.log('✅ Family Tree entry created automatically for:', user.name);
+    } catch (familyTreeError) {
+      // Log error but don't fail signup
+      console.log('⚠️ Failed to create Family Tree entry:', familyTreeError.message);
+    }
+
     console.log('=== SIGNUP SUCCESS ===\n');
 
     res.status(201).json({
@@ -110,6 +141,7 @@ router.post('/signup', async (req, res) => {
         email: user.email,
         role: user.role,
         phone: user.phone,
+        memberId: user.memberId,
       },
     });
   } catch (error) {
@@ -207,6 +239,7 @@ router.post('/login', async (req, res) => {
         email: user.email,
         role: user.role,
         phone: user.phone,
+        memberId: user.memberId,
       },
     });
   } catch (error) {
@@ -233,6 +266,7 @@ router.get('/me', protect, async (req, res) => {
         email: user.email,
         role: user.role,
         phone: user.phone,
+        memberId: user.memberId,
       },
     });
   } catch (error) {

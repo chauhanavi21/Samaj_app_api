@@ -30,6 +30,12 @@ const userSchema = new mongoose.Schema({
     type: String,
     trim: true,
   },
+  memberId: {
+    type: String,
+    trim: true,
+    unique: true,
+    sparse: true, // Allow null values but unique if provided
+  },
   createdAt: {
     type: Date,
     default: Date.now,
