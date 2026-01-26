@@ -278,6 +278,61 @@ router.get('/me', protect, async (req, res) => {
   }
 });
 
+// @route   PUT /api/auth/profile
+// @desc    Update user profile
+// @access  Private
+router.put('/profile', protect, async (req, res) => {
+  try {
+    const { memberId } = req.body;
+    const user = await User.findById(req.user.id);
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found',
+      });
+    }
+
+    // If memberId is provided and different from current, check uniqueness
+    if (memberId && memberId !== user.memberId) {
+      const existingMemberId = await User.findOne({ 
+        memberId, 
+        _id: { $ne: user._id } // Exclude current user
+      });
+      
+      if (existingMemberId) {
+        return res.status(400).json({
+          success: false,
+          message: 'Member ID already exists. Please use a different Member ID.',
+        });
+      }
+      
+      user.memberId = memberId.trim();
+    }
+
+    await user.save();
+
+    res.json({
+      success: true,
+      message: 'Profile updated successfully',
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        phone: user.phone,
+        memberId: user.memberId,
+      },
+    });
+  } catch (error) {
+    console.error('Update profile error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Server error',
+    });
+  }
+});
+
 // @route   POST /api/auth/logout
 // @desc    Logout user (client-side token removal, this is just for consistency)
 // @access  Private
