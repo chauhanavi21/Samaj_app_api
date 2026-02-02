@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const User = require('../models/User');
 const FamilyTree = require('../models/FamilyTree');
 const { protect } = require('../middleware/auth');
+const { sendPasswordResetEmail, sendWelcomeEmail } = require('../utils/emailService');
 
 const router = express.Router();
 
@@ -128,6 +129,11 @@ router.post('/signup', async (req, res) => {
       // Log error but don't fail signup
       console.log('⚠️ Failed to create Family Tree entry:', familyTreeError.message);
     }
+
+    // Send welcome email (don't wait for it)
+    sendWelcomeEmail(user.email, user.name, user.memberId).catch(err => {
+      console.log('⚠️ Failed to send welcome email:', err.message);
+    });
 
     console.log('=== SIGNUP SUCCESS ===\n');
 
@@ -389,19 +395,47 @@ router.post('/forgot-password', async (req, res) => {
     await user.save({ validateBeforeSave: false });
 
     console.log('✅ Reset token generated for:', user.email);
-    console.log('Reset Token:', resetToken);
     console.log('Token expires in 10 minutes');
-    console.log('================================\n');
 
-    res.status(200).json({
-      success: true,
-      message: 'Password reset token generated successfully',
-      resetToken: resetToken, // In production, this would be sent via email
-      // For development/testing without email service
-      memberId: user.memberId,
-      email: user.email,
-      expiresIn: '10 minutes',
-    });
+    // Send password reset email
+    try {
+      await sendPasswordResetEmail(user.email, resetToken, user.name);
+      console.log('✅ Password reset email sent to:', user.email);
+      console.log('================================\n');
+
+      res.status(200).json({
+        success: true,
+        message: 'Password reset email sent successfully. Please check your inbox.',
+        email: user.email,
+        expiresIn: '10 minutes',
+      });
+    } catch (emailError) {
+      console.error('❌ Failed to send email:', emailError);
+      
+      // Delete the reset token since email failed
+      user.resetPasswordToken = undefined;
+      user.resetPasswordExpire = undefined;
+      await user.save({ validateBeforeSave: false });
+
+      // For development: return token in response if email fails
+      if (process.env.NODE_ENV === 'development') {
+        console.log('⚠️ Email failed, returning token in response (DEV MODE)');
+        console.log('Reset Token:', resetToken);
+        return res.status(200).json({
+          success: true,
+          message: 'Email service unavailable. Reset token provided for development.',
+          resetToken: resetToken,
+          email: user.email,
+          expiresIn: '10 minutes',
+          warning: 'Email service not configured. This token is only available in development mode.',
+        });
+      }
+
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to send password reset email. Please try again later or contact support.',
+      });
+    }
   } catch (error) {
     console.error('Forgot password error:', error);
     res.status(500).json({
