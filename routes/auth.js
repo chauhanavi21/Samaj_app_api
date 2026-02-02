@@ -1,5 +1,6 @@
 const express = require('express');
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
 const User = require('../models/User');
 const FamilyTree = require('../models/FamilyTree');
 const { protect } = require('../middleware/auth');
@@ -346,6 +347,152 @@ router.post('/logout', protect, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Server error',
+    });
+  }
+});
+
+// @route   POST /api/auth/forgot-password
+// @desc    Request password reset (generates reset token)
+// @access  Public
+router.post('/forgot-password', async (req, res) => {
+  try {
+    const { email, memberId } = req.body;
+
+    console.log('\n=== FORGOT PASSWORD REQUEST ===');
+    console.log('Email:', email);
+    console.log('Member ID:', memberId);
+
+    // Validation
+    if (!email || !memberId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide email and Member ID',
+      });
+    }
+
+    // Find user by email and memberId
+    const user = await User.findOne({ 
+      email: email.toLowerCase(),
+      memberId: memberId.trim()
+    });
+
+    if (!user) {
+      console.log('❌ User not found with provided email and Member ID');
+      return res.status(404).json({
+        success: false,
+        message: 'No account found with this email and Member ID combination',
+      });
+    }
+
+    // Generate reset token
+    const resetToken = user.getResetPasswordToken();
+    await user.save({ validateBeforeSave: false });
+
+    console.log('✅ Reset token generated for:', user.email);
+    console.log('Reset Token:', resetToken);
+    console.log('Token expires in 10 minutes');
+    console.log('================================\n');
+
+    res.status(200).json({
+      success: true,
+      message: 'Password reset token generated successfully',
+      resetToken: resetToken, // In production, this would be sent via email
+      // For development/testing without email service
+      memberId: user.memberId,
+      email: user.email,
+      expiresIn: '10 minutes',
+    });
+  } catch (error) {
+    console.error('Forgot password error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error while processing password reset request',
+    });
+  }
+});
+
+// @route   POST /api/auth/reset-password/:resetToken
+// @desc    Reset password using token
+// @access  Public
+router.post('/reset-password/:resetToken', async (req, res) => {
+  try {
+    const { password, confirmPassword } = req.body;
+    const resetToken = req.params.resetToken;
+
+    console.log('\n=== RESET PASSWORD REQUEST ===');
+
+    // Validation
+    if (!password || !confirmPassword) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide password and confirm password',
+      });
+    }
+
+    if (password !== confirmPassword) {
+      return res.status(400).json({
+        success: false,
+        message: 'Passwords do not match',
+      });
+    }
+
+    if (password.length < 6) {
+      return res.status(400).json({
+        success: false,
+        message: 'Password must be at least 6 characters',
+      });
+    }
+
+    // Hash the provided token to compare with database
+    const hashedToken = crypto
+      .createHash('sha256')
+      .update(resetToken)
+      .digest('hex');
+
+    // Find user with valid reset token
+    const user = await User.findOne({
+      resetPasswordToken: hashedToken,
+      resetPasswordExpire: { $gt: Date.now() },
+    }).select('+password');
+
+    if (!user) {
+      console.log('❌ Invalid or expired reset token');
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid or expired reset token',
+      });
+    }
+
+    // Set new password (will be hashed by pre-save hook)
+    user.password = password;
+    user.resetPasswordToken = undefined;
+    user.resetPasswordExpire = undefined;
+    await user.save();
+
+    console.log('✅ Password reset successfully for:', user.email);
+    console.log('================================\n');
+
+    // Generate new token for auto-login
+    const token = generateToken(user._id);
+
+    res.status(200).json({
+      success: true,
+      message: 'Password reset successfully',
+      token,
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        phone: user.phone,
+        memberId: user.memberId,
+      },
+    });
+  } catch (error) {
+    console.error('Reset password error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error while resetting password',
     });
   }
 });
