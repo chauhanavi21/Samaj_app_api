@@ -1,6 +1,6 @@
 const express = require('express');
 const FamilyTree = require('../models/FamilyTree');
-const { protect } = require('../middleware/auth');
+const { protect, admin } = require('../middleware/clerkAuth');
 
 const router = express.Router();
 

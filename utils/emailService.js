@@ -119,6 +119,16 @@ const sendPasswordResetEmail = async (email, resetToken, userName) => {
   try {
     const transporter = createTransporter();
     
+    // Verify transporter configuration
+    try {
+      await transporter.verify();
+      console.log('✅ Email server is ready to send messages');
+    } catch (verifyError) {
+      console.error('❌ Email server verification failed:', verifyError.message);
+      console.error('Check your email provider credentials in .env file');
+      throw verifyError;
+    }
+    
     // In production, this would be your actual domain
     // For now, you can use ngrok/cloudflare tunnel URL or localhost
     const resetUrl = `${process.env.FRONTEND_URL || 'exp://192.168.1.100:8081'}/--/reset-password?resetToken=${resetToken}`;

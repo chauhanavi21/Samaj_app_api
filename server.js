@@ -23,6 +23,11 @@ app.use(cors({
   origin: '*', // Allow all origins in development
   credentials: true,
 }));
+
+// RAW body parser for webhooks (MUST be before express.json())
+app.use('/api/auth/webhook', express.raw({ type: 'application/json' }));
+
+// Regular body parsers for other routes
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -40,7 +45,10 @@ app.use((req, res, next) => {
 });
 
 // Routes
-app.use('/api/auth', require('./routes/auth'));
+// Clerk auth routes (new)
+app.use('/api/auth', require('./routes/clerkAuth'));
+
+// Family tree routes (updated to use Clerk auth)
 app.use('/api/family-tree', require('./routes/familyTree'));
 
 // Health check
