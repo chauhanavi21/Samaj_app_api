@@ -231,21 +231,23 @@ router.get('/me', protect, async (req, res) => {
 // @route   POST /api/auth/sync
 // @desc    Manually sync user from Clerk (for development/testing)
 // @access  Public (in dev mode)
+// @route   POST /api/auth/sync
+// @desc    Sync user from Clerk to MongoDB (creates if doesn't exist)
+// @access  Public (requires Clerk data in body)
 router.post('/sync', async (req, res) => {
   try {
-    if (process.env.NODE_ENV === 'production') {
-      return res.status(403).json({
-        success: false,
-        message: 'This endpoint is only available in development',
-      });
-    }
-
     const { clerkId, email, name, phone, memberId } = req.body;
 
-    if (!clerkId || !email || !name || !memberId) {
+    console.log('\n=== SYNC USER REQUEST ===');
+    console.log('ClerkID:', clerkId);
+    console.log('Email:', email);
+    console.log('Name:', name);
+    console.log('MemberID:', memberId);
+
+    if (!clerkId || !email || !name) {
       return res.status(400).json({
         success: false,
-        message: 'Missing required fields: clerkId, email, name, memberId',
+        message: 'Missing required fields: clerkId, email, name',
       });
     }
 
@@ -254,11 +256,15 @@ router.post('/sync', async (req, res) => {
 
     if (user) {
       // Update existing user
+      console.log('✅ User found, updating...');
       user.name = name;
       user.email = email;
-      user.phone = phone || user.phone;
-      user.memberId = memberId;
+      if (phone) user.phone = phone;
+      if (memberId) user.memberId = memberId;
       await user.save();
+      
+      console.log('✅ User updated successfully');
+      console.log('=== SYNC COMPLETE ===\n');
       
       return res.json({
         success: true,
@@ -268,12 +274,15 @@ router.post('/sync', async (req, res) => {
           clerkId: user.clerkId,
           name: user.name,
           email: user.email,
+          phone: user.phone,
           memberId: user.memberId,
+          role: user.role,
         },
       });
     }
 
     // Create new user
+    console.log('⚡ User not found, creating new user...');
     const adminEmails = process.env.ADMIN_EMAILS?.split(',').map(e => e.trim()) || [];
     const role = adminEmails.includes(email.toLowerCase()) ? 'admin' : 'user';
 
@@ -281,17 +290,26 @@ router.post('/sync', async (req, res) => {
       clerkId,
       name,
       email,
-      phone,
-      memberId,
+      phone: phone || '',
+      memberId: memberId || '',
       role,
     });
 
+    console.log('✅ User created:', user._id);
+
     // Create Family Tree entry
-    await FamilyTree.create({
-      createdBy: user._id,
-      personName: name,
-      personPhone: phone || '',
-    });
+    try {
+      await FamilyTree.create({
+        createdBy: user._id,
+        personName: name,
+        personPhone: phone || '',
+      });
+      console.log('✅ Family Tree entry created');
+    } catch (familyErr) {
+      console.log('⚠️ Family Tree creation failed:', familyErr.message);
+    }
+
+    console.log('=== SYNC COMPLETE ===\n');
 
     res.status(201).json({
       success: true,
@@ -301,11 +319,14 @@ router.post('/sync', async (req, res) => {
         clerkId: user.clerkId,
         name: user.name,
         email: user.email,
+        phone: user.phone,
         memberId: user.memberId,
+        role: user.role,
       },
     });
   } catch (error) {
-    console.error('Sync error:', error);
+    console.error('❌ Sync error:', error);
+    console.log('=== SYNC FAILED ===\n');
     res.status(500).json({
       success: false,
       message: error.message || 'Failed to sync user',
