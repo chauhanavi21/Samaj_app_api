@@ -5,7 +5,10 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "nodemon server.js"
+    "dev": "nodemon server.js",
+    "bootstrap-admin": "node scripts/bootstrapAdmin.js",
+    "test-admin": "node scripts/testAdminAPI.js",
+    "validate-admin": "node scripts/validateAdminSetup.js"
   },
   "keywords": [
     "mongodb",
@@ -24,6 +27,7 @@
     "express": "^4.18.2",
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.0.3",
+    "multer": "^1.4.5-lts.1",
     "nodemailer": "^7.0.13",
     "svix": "^1.84.1"
   },

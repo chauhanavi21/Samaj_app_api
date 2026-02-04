@@ -1,8 +1,10 @@
 const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
+const path = require('path');
 const connectDB = require('./config/db');
 const cronJob = require('./config/cron');
+const bootstrapAdmin = require('./scripts/bootstrapAdmin');
 
 // Load env vars
 dotenv.config();
@@ -14,7 +16,17 @@ if (process.env.NODE_ENV === 'production') {
 }
 
 // Connect to database
-connectDB();
+connectDB().then(async () => {
+  // Bootstrap admin account if enabled
+  if (process.env.ENABLE_ADMIN_BOOTSTRAP === 'true') {
+    try {
+      await bootstrapAdmin();
+    } catch (error) {
+      console.error('⚠️  Admin bootstrap failed:', error.message);
+      // Don't stop server if bootstrap fails
+    }
+  }
+});
 
 const app = express();
 
@@ -47,6 +59,12 @@ app.use('/api/auth', require('./routes/auth'));
 
 // Family tree routes
 app.use('/api/family-tree', require('./routes/familyTree'));
+
+// Admin routes (protected)
+app.use('/api/admin', require('./routes/admin'));
+
+// Serve uploaded files
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Health check
 app.get('/api/health', (req, res) => {
