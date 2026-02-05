@@ -14,8 +14,14 @@ let warnings = 0;
 // Check 1: Required files exist
 console.log('📁 Checking Required Files:');
 const requiredFiles = [
-  'models/PageContent.js',
+  'models/CommitteeMember.js',
+  'models/Sponsor.js',
+  'models/SpecialOffer.js',
+  'models/UpcomingEvent.js',
+  'models/SpiritualPlace.js',
   'routes/admin.js',
+  'routes/content.js',
+  'routes/adminContent.js',
   'scripts/bootstrapAdmin.js',
   '.env.example',
 ];

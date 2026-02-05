@@ -57,11 +57,17 @@ app.use((req, res, next) => {
 // JWT auth routes (MongoDB-based)
 app.use('/api/auth', require('./routes/auth'));
 
+// Public dynamic content routes
+app.use('/api/content', require('./routes/content'));
+
 // Family tree routes
 app.use('/api/family-tree', require('./routes/familyTree'));
 
 // Admin routes (protected)
 app.use('/api/admin', require('./routes/admin'));
+
+// Admin-managed dynamic content routes (protected)
+app.use('/api/admin/content', require('./routes/adminContent'));
 
 // Serve uploaded files
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));

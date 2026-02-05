@@ -13,8 +13,8 @@ const http = require('http');
 
 // Configuration
 const BASE_URL = process.env.API_URL || 'http://localhost:3001';
-const ADMIN_EMAIL = process.env.ADMIN_BOOTSTRAP_EMAIL || 'chauhanavi843@gmail.com';
-const ADMIN_PASSWORD = process.env.ADMIN_BOOTSTRAP_PASSWORD || 'Admin@123!ChangeMe';
+const ADMIN_EMAIL = process.env.ADMIN_BOOTSTRAP_EMAIL || 'admin@example.com';
+const ADMIN_PASSWORD = process.env.ADMIN_BOOTSTRAP_PASSWORD || 'ChangeMe!123';
 
 let authToken = '';
 
@@ -117,52 +117,14 @@ const tests = [
     }
   },
   {
-    name: 'List Pages',
-    run: async () => {
-      const res = await makeRequest('GET', '/api/admin/pages', null, authToken);
-      if (res.status === 200 && res.data.success) {
-        return { 
-          passed: true, 
-          message: `Found ${res.data.count} pages` 
-        };
-      }
-      return { passed: false, message: res.data.message || 'List pages failed' };
-    }
-  },
-  {
-    name: 'Create Test Page',
-    run: async () => {
-      const testPage = {
-        pageName: 'test-page-' + Date.now(),
-        displayName: 'Test Page',
-        sections: [
-          {
-            title: 'Test Section',
-            text: 'This is a test section',
-            order: 0,
-          }
-        ],
-        isPublished: false,
-      };
-      
-      const res = await makeRequest('POST', '/api/admin/pages', testPage, authToken);
-      if (res.status === 201 && res.data.success) {
-        // Clean up: delete the test page
-        await makeRequest('DELETE', `/api/admin/pages/${testPage.pageName}`, null, authToken);
-        return { passed: true, message: 'Created and deleted test page successfully' };
-      }
-      return { passed: false, message: res.data.message || 'Create page failed' };
-    }
-  },
-  {
     name: 'Stats Overview',
     run: async () => {
       const res = await makeRequest('GET', '/api/admin/stats/overview', null, authToken);
       if (res.status === 200 && res.data.success) {
-        const { users, pages } = res.data.data;
+        const { users, content } = res.data.data;
         return { 
           passed: true, 
-          message: `Total: ${users.total}, Today: ${users.today}, Pages: ${pages.total}` 
+          message: `Users: ${users.total} (today ${users.today}), Content: committee ${content.committee}, sponsors ${content.sponsors}, offers ${content.offers}, events ${content.events}, places ${content.places}` 
         };
       }
       return { passed: false, message: res.data.message || 'Stats failed' };

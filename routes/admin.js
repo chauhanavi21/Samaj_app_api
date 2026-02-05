@@ -4,7 +4,11 @@ const path = require('path');
 const fs = require('fs');
 const User = require('../models/User');
 const FamilyTree = require('../models/FamilyTree');
-const PageContent = require('../models/PageContent');
+const CommitteeMember = require('../models/CommitteeMember');
+const Sponsor = require('../models/Sponsor');
+const SpecialOffer = require('../models/SpecialOffer');
+const UpcomingEvent = require('../models/UpcomingEvent');
+const SpiritualPlace = require('../models/SpiritualPlace');
 const { protect, authorize } = require('../middleware/auth');
 
 const router = express.Router();
@@ -121,183 +125,6 @@ router.get('/dashboard', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to fetch dashboard statistics',
-      error: error.message,
-    });
-  }
-});
-
-// ============================================
-// PAGE CONTENT MANAGEMENT (CMS)
-// ============================================
-
-// @route   GET /api/admin/pages
-// @desc    Get all pages
-// @access  Admin only
-router.get('/pages', async (req, res) => {
-  try {
-    const pages = await PageContent.find()
-      .populate('lastModifiedBy', 'name email')
-      .sort({ displayName: 1 });
-
-    res.json({
-      success: true,
-      count: pages.length,
-      data: pages,
-    });
-  } catch (error) {
-    console.error('Get pages error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to fetch pages',
-      error: error.message,
-    });
-  }
-});
-
-// @route   GET /api/admin/pages/:pageName
-// @desc    Get a specific page by pageName
-// @access  Admin only
-router.get('/pages/:pageName', async (req, res) => {
-  try {
-    const page = await PageContent.findOne({ pageName: req.params.pageName.toLowerCase() })
-      .populate('lastModifiedBy', 'name email');
-
-    if (!page) {
-      return res.status(404).json({
-        success: false,
-        message: 'Page not found',
-      });
-    }
-
-    res.json({
-      success: true,
-      data: page,
-    });
-  } catch (error) {
-    console.error('Get page error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to fetch page',
-      error: error.message,
-    });
-  }
-});
-
-// @route   POST /api/admin/pages
-// @desc    Create a new page
-// @access  Admin only
-router.post('/pages', async (req, res) => {
-  try {
-    const { pageName, displayName, sections, isPublished } = req.body;
-
-    // Validation
-    if (!pageName || !displayName) {
-      return res.status(400).json({
-        success: false,
-        message: 'Page name and display name are required',
-      });
-    }
-
-    // Check if page already exists
-    const existingPage = await PageContent.findOne({ pageName: pageName.toLowerCase() });
-    if (existingPage) {
-      return res.status(400).json({
-        success: false,
-        message: 'A page with this name already exists',
-      });
-    }
-
-    const page = await PageContent.create({
-      pageName: pageName.toLowerCase(),
-      displayName,
-      sections: sections || [],
-      isPublished: isPublished !== undefined ? isPublished : true,
-      lastModifiedBy: req.user._id,
-    });
-
-    const populatedPage = await PageContent.findById(page._id)
-      .populate('lastModifiedBy', 'name email');
-
-    res.status(201).json({
-      success: true,
-      message: 'Page created successfully',
-      data: populatedPage,
-    });
-  } catch (error) {
-    console.error('Create page error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to create page',
-      error: error.message,
-    });
-  }
-});
-
-// @route   PUT /api/admin/pages/:pageName
-// @desc    Update a page
-// @access  Admin only
-router.put('/pages/:pageName', async (req, res) => {
-  try {
-    const { displayName, sections, isPublished } = req.body;
-
-    const page = await PageContent.findOne({ pageName: req.params.pageName.toLowerCase() });
-
-    if (!page) {
-      return res.status(404).json({
-        success: false,
-        message: 'Page not found',
-      });
-    }
-
-    // Update fields
-    if (displayName !== undefined) page.displayName = displayName;
-    if (sections !== undefined) page.sections = sections;
-    if (isPublished !== undefined) page.isPublished = isPublished;
-    page.lastModifiedBy = req.user._id;
-
-    await page.save();
-
-    const populatedPage = await PageContent.findById(page._id)
-      .populate('lastModifiedBy', 'name email');
-
-    res.json({
-      success: true,
-      message: 'Page updated successfully',
-      data: populatedPage,
-    });
-  } catch (error) {
-    console.error('Update page error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to update page',
-      error: error.message,
-    });
-  }
-});
-
-// @route   DELETE /api/admin/pages/:pageName
-// @desc    Delete a page
-// @access  Admin only
-router.delete('/pages/:pageName', async (req, res) => {
-  try {
-    const page = await PageContent.findOneAndDelete({ pageName: req.params.pageName.toLowerCase() });
-
-    if (!page) {
-      return res.status(404).json({
-        success: false,
-        message: 'Page not found',
-      });
-    }
-
-    res.json({
-      success: true,
-      message: 'Page deleted successfully',
-    });
-  } catch (error) {
-    console.error('Delete page error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to delete page',
       error: error.message,
     });
   }
@@ -788,15 +615,21 @@ router.get('/stats/overview', async (req, res) => {
       todayUsers,
       weekUsers,
       monthUsers,
-      totalPages,
-      publishedPages,
+      committeeCount,
+      sponsorCount,
+      offerCount,
+      eventCount,
+      placeCount,
     ] = await Promise.all([
       User.countDocuments(),
       User.countDocuments({ createdAt: { $gte: startOfToday } }),
       User.countDocuments({ createdAt: { $gte: startOfWeek } }),
       User.countDocuments({ createdAt: { $gte: startOfMonth } }),
-      PageContent.countDocuments(),
-      PageContent.countDocuments({ isPublished: true }),
+      CommitteeMember.countDocuments(),
+      Sponsor.countDocuments(),
+      SpecialOffer.countDocuments(),
+      UpcomingEvent.countDocuments(),
+      SpiritualPlace.countDocuments(),
     ]);
 
     res.json({
@@ -808,10 +641,12 @@ router.get('/stats/overview', async (req, res) => {
           thisWeek: weekUsers,
           thisMonth: monthUsers,
         },
-        pages: {
-          total: totalPages,
-          published: publishedPages,
-          draft: totalPages - publishedPages,
+        content: {
+          committee: committeeCount,
+          sponsors: sponsorCount,
+          offers: offerCount,
+          events: eventCount,
+          places: placeCount,
         },
       },
     });
