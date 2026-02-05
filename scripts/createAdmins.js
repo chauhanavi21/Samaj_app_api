@@ -20,7 +20,10 @@ const connectDB = async () => {
 const createAdmins = async () => {
   await connectDB();
 
-  const adminEmails = process.env.ADMIN_EMAILS?.split(',').map(e => e.trim()) || [];
+  const adminEmails = (process.env.ADMIN_EMAILS ?? '')
+    .split(',')
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean);
   
   if (adminEmails.length === 0) {
     console.log('No admin emails found in .env file');

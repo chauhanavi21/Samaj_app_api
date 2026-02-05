@@ -25,13 +25,16 @@ router.post('/signup', async (req, res) => {
   try {
     const { name, email, password, phone, memberId } = req.body;
 
+    const normalizedEmail = String(email ?? '').trim().toLowerCase();
+    const normalizedMemberId = String(memberId ?? '').trim();
+
     console.log('\n=== SIGNUP ATTEMPT ===');
-    console.log('Email:', email);
+    console.log('Email:', normalizedEmail);
     console.log('Name:', name);
-    console.log('Member ID:', memberId);
+    console.log('Member ID:', normalizedMemberId);
 
     // Validation
-    if (!name || !email || !password || !memberId) {
+    if (!name || !normalizedEmail || !password || !normalizedMemberId) {
       console.log('❌ Validation failed: Missing required fields');
       return res.status(400).json({
         success: false,
@@ -40,9 +43,9 @@ router.post('/signup', async (req, res) => {
     }
 
     // Check if memberId is already taken
-    const existingMemberId = await User.findOne({ memberId });
+    const existingMemberId = await User.findOne({ memberId: normalizedMemberId });
     if (existingMemberId) {
-      console.log('❌ Member ID already exists:', memberId);
+      console.log('❌ Member ID already exists:', normalizedMemberId);
       return res.status(400).json({
         success: false,
         message: 'Member ID already exists. Please use a different Member ID.',
@@ -50,7 +53,7 @@ router.post('/signup', async (req, res) => {
     }
 
     // Check if user already exists
-    const userExists = await User.findOne({ email: email.toLowerCase() });
+    const userExists = await User.findOne({ email: normalizedEmail });
     if (userExists) {
       console.log('❌ User already exists:', {
         email: userExists.email,
@@ -61,31 +64,38 @@ router.post('/signup', async (req, res) => {
       return res.status(400).json({
         success: false,
         message: 'User already exists with this email',
-        debug: {
-          existingUser: {
-            email: userExists.email,
-            name: userExists.name,
-            registeredAt: userExists.createdAt,
-          },
-        },
+        ...(process.env.NODE_ENV === 'development'
+          ? {
+              debug: {
+                existingUser: {
+                  email: userExists.email,
+                  name: userExists.name,
+                  registeredAt: userExists.createdAt,
+                },
+              },
+            }
+          : {}),
       });
     }
 
     console.log('✅ Email is available, proceeding with signup...');
 
     // Check if email should be admin (from env)
-    const adminEmails = process.env.ADMIN_EMAILS?.split(',').map(e => e.trim()) || [];
-    const role = adminEmails.includes(email.toLowerCase()) ? 'admin' : 'user';
+    const adminEmails = (process.env.ADMIN_EMAILS ?? '')
+      .split(',')
+      .map((e) => e.trim().toLowerCase())
+      .filter(Boolean);
+    const role = adminEmails.includes(normalizedEmail) ? 'admin' : 'user';
 
     // Create user
     let user;
     try {
       user = await User.create({
         name,
-        email: email.toLowerCase(),
+        email: normalizedEmail,
         password,
         phone: phone || '',
-        memberId: memberId.trim(),
+        memberId: normalizedMemberId,
         role,
       });
     } catch (createError) {
@@ -93,7 +103,7 @@ router.post('/signup', async (req, res) => {
       if (createError.name === 'MongoWriteConcernError') {
         console.log('⚠️ Write concern error, checking if user was created...');
         // Try to find the user - if it exists, the creation succeeded
-        const existingUser = await User.findOne({ email: email.toLowerCase() });
+        const existingUser = await User.findOne({ email: normalizedEmail });
         if (existingUser) {
           console.log('✅ User was created despite write concern error, using existing user');
           user = existingUser;
@@ -160,10 +170,32 @@ router.post('/signup', async (req, res) => {
     
     // Handle MongoDB duplicate key error
     if (error.code === 11000) {
-      console.log('❌ Duplicate email error');
+      const duplicateKeys = Object.keys(error.keyPattern || error.keyValue || {});
+      const duplicateKey = duplicateKeys[0];
+
+      if (duplicateKey === 'email') {
+        console.log('❌ Duplicate email error');
+        return res.status(400).json({
+          success: false,
+          message: 'User already exists with this email',
+        });
+      }
+
+      if (duplicateKey === 'memberId') {
+        console.log('❌ Duplicate memberId error');
+        return res.status(400).json({
+          success: false,
+          message: 'Member ID already exists. Please use a different Member ID.',
+        });
+      }
+
+      console.log('❌ Duplicate key error:', duplicateKeys);
       return res.status(400).json({
         success: false,
-        message: 'User already exists with this email',
+        message: 'Duplicate value. Please use different details and try again.',
+        ...(process.env.NODE_ENV === 'development'
+          ? { debug: { duplicateKeys, keyValue: error.keyValue } }
+          : {}),
       });
     }
     

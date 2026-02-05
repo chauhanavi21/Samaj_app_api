@@ -1,63 +1,19 @@
 const express = require('express');
-const { Webhook } = require('svix');
-const User = require('../models/User');
-const FamilyTree = require('../models/FamilyTree');
-const { protect } = require('../middleware/clerkAuth');
+
+// Clerk is no longer used in this project.
+// This route is kept as a safe placeholder so any accidental deployment
+// doesn’t crash due to missing Clerk/Svix dependencies.
 
 const router = express.Router();
 
-// @route   POST /api/auth/webhook
-// @desc    Handle Clerk webhooks (user created, updated, deleted)
-// @access  Public (verified by webhook secret)
-router.post('/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
-  try {
-    const WEBHOOK_SECRET = process.env.CLERK_WEBHOOK_SECRET;
+router.all('*', (req, res) => {
+  return res.status(410).json({
+    success: false,
+    message: 'Clerk integration has been removed. Use /api/auth (JWT) endpoints instead.',
+  });
+});
 
-    if (!WEBHOOK_SECRET) {
-      console.error('❌ CLERK_WEBHOOK_SECRET is not configured');
-      return res.status(500).json({
-        success: false,
-        message: 'Webhook secret not configured',
-      });
-    }
-
-    // Get Svix headers
-    const svix_id = req.headers['svix-id'];
-    const svix_timestamp = req.headers['svix-timestamp'];
-    const svix_signature = req.headers['svix-signature'];
-
-    if (!svix_id || !svix_timestamp || !svix_signature) {
-      return res.status(400).json({
-        success: false,
-        message: 'Missing svix headers',
-      });
-    }
-
-    // Get the raw body
-    const payload = req.body;
-
-    // Verify webhook
-    const wh = new Webhook(WEBHOOK_SECRET);
-    let evt;
-
-    try {
-      evt = wh.verify(payload, {
-        'svix-id': svix_id,
-        'svix-timestamp': svix_timestamp,
-        'svix-signature': svix_signature,
-      });
-    } catch (err) {
-      console.error('❌ Webhook verification failed:', err.message);
-      return res.status(400).json({
-        success: false,
-        message: 'Webhook verification failed',
-      });
-    }
-
-    // Handle different webhook events
-    const eventType = evt.type;
-    console.log(`\n=== CLERK WEBHOOK: ${eventType} ===`);
-
+/*
     switch (eventType) {
       case 'user.created':
         await handleUserCreated(evt.data);
@@ -112,7 +68,10 @@ async function handleUserCreated(data) {
     }
 
     // Determine if user is admin
-    const adminEmails = process.env.ADMIN_EMAILS?.split(',').map(e => e.trim()) || [];
+    const adminEmails = (process.env.ADMIN_EMAILS ?? '')
+      .split(',')
+      .map((e) => e.trim().toLowerCase())
+      .filter(Boolean);
     const role = adminEmails.includes(email.toLowerCase()) ? 'admin' : 'user';
 
     // Create user in MongoDB
@@ -333,5 +292,6 @@ router.post('/sync', async (req, res) => {
     });
   }
 });
+*/
 
 module.exports = router;
