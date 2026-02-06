@@ -194,6 +194,10 @@ router.post('/signup', async (req, res) => {
         phone: phone || '',
         memberId: normalizedMemberId,
         role,
+        // Set approval status based on verification
+        accountStatus,
+        verificationStatus,
+        requiresAdminApproval,
       });
     } catch (createError) {
       // Check if user was actually created despite the error
@@ -208,6 +212,10 @@ router.post('/signup', async (req, res) => {
           throw createError; // User wasn't created, throw the error
         }
       } else {
+        throw createError; // Different error, throw it
+      }
+    }
+
     console.log('✅ User created successfully:', {
       id: user._id,
       email: user.email,
