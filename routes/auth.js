@@ -256,11 +256,7 @@ router.post('/signup', async (req, res) => {
 
     // For approved users, proceed with normal flow
     // Generate token
-    const token = generateToken(user._id email: user.email,
-      name: user.name,
-      role: user.role,
-      memberId: user.memberId,
-    });
+    const token = generateToken(user._id);
 
     // Automatically create a Family Tree entry for the new user
     try {
