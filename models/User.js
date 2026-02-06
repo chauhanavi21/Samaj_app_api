@@ -37,6 +37,44 @@ const userSchema = new mongoose.Schema({
     trim: true,
     unique: true,
   },
+  // Account approval status fields
+  accountStatus: {
+    type: String,
+    enum: ['pending', 'approved', 'rejected'],
+    default: 'approved', // Default to approved for backwards compatibility
+  },
+  verificationStatus: {
+    type: String,
+    enum: ['verified', 'unverified', 'pending_admin'],
+    default: 'verified', // Default to verified for backwards compatibility
+  },
+  // If member ID and phone don't match authorized list
+  requiresAdminApproval: {
+    type: Boolean,
+    default: false,
+  },
+  // Admin who approved/rejected
+  reviewedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+  },
+  reviewedAt: {
+    type: Date,
+  },
+  rejectionReason: {
+    type: String,
+  },
+  // Notification preferences (for future implementation)
+  notificationPreferences: {
+    email: {
+      type: Boolean,
+      default: true,
+    },
+    sms: {
+      type: Boolean,
+      default: false,
+    },
+  },
   resetPasswordToken: String,
   resetPasswordExpire: Date,
   createdAt: {

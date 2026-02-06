@@ -8,7 +8,10 @@
     "dev": "nodemon server.js",
     "bootstrap-admin": "node scripts/bootstrapAdmin.js",
     "test-admin": "node scripts/testAdminAPI.js",
-    "validate-admin": "node scripts/validateAdminSetup.js"
+    "validate-admin": "node scripts/validateAdminSetup.js",
+    "import-members": "node scripts/importAuthorizedMembers.js",
+    "export-members": "node scripts/exportAuthorizedMembers.js",
+    "test-verification": "node scripts/testVerificationSystem.js"
   },
   "keywords": [
     "mongodb",
@@ -27,7 +30,8 @@
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.0.3",
     "multer": "^1.4.5-lts.1",
-    "nodemailer": "^7.0.13"
+    "nodemailer": "^7.0.13",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "nodemon": "^3.0.2"

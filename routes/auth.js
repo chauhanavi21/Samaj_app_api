@@ -2,6 +2,7 @@ const express = require('express');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const User = require('../models/User');
+const AuthorizedMember = require('../models/AuthorizedMember');
 const FamilyTree = require('../models/FamilyTree');
 const { protect } = require('../middleware/auth');
 const { sendPasswordResetEmail, sendWelcomeEmail } = require('../utils/emailService');
@@ -78,7 +79,103 @@ router.post('/signup', async (req, res) => {
       });
     }
 
-    console.log('✅ Email is available, proceeding with signup...');
+    console.log('✅ Email is available, proceeding with verification...');
+
+    // VERIFICATION: Check if member ID and phone number match authorized list
+    let isVerified = false;
+    let requiresAdminApproval = false;
+    let accountStatus = 'approved';
+    let verificationStatus = 'verified';
+    let authorizedMember = null;
+
+    try {
+      // Normalize phone number for comparison (remove spaces, dashes, etc.)
+      const normalizedPhone = String(phone ?? '').replace(/[\s\-\(\)]/g, '').trim();
+      
+      console.log('🔍 Checking authorized members list...');
+      console.log('Looking for - Member ID:', normalizedMemberId, ', Phone:', normalizedPhone);
+      
+      // Try to find by memberId first
+      if (normalizedMemberId) {
+        authorizedMember = await AuthorizedMember.findOne({
+          memberId: normalizedMemberId,
+        });
+      }
+      
+      // If not found by memberId, try by phone
+      if (!authorizedMember && normalizedPhone) {
+        authorizedMember = await AuthorizedMember.findOne({
+          phoneNumber: normalizedPhone,
+        });
+      }
+
+      if (authorizedMember) {
+        // Found in authorized list - check match quality
+        const authorizedPhone = (authorizedMember.phoneNumber || '').replace(/[\s\-\(\)]/g, '').trim();
+        const authorizedMemberId = authorizedMember.memberId || '';
+        
+        let matchCount = 0;
+        let matchDetails = [];
+        
+        // Check memberId match
+        if (authorizedMemberId && normalizedMemberId === authorizedMemberId) {
+          matchCount++;
+          matchDetails.push('memberId matches');
+        }
+        
+        // Check phone match
+        if (authorizedPhone && normalizedPhone === authorizedPhone) {
+          matchCount++;
+          matchDetails.push('phone matches');
+        }
+        
+        if (matchCount === 2) {
+          // Perfect match - both memberId and phone match
+          isVerified = true;
+          console.log('✅ Member verified - perfect match (memberId + phone)');
+        } else if (matchCount === 1) {
+          // Partial match - only one field matches
+          if (authorizedMemberId && !authorizedPhone) {
+            // Member has no phone in database - accept memberId match
+            isVerified = true;
+            console.log('✅ Member verified - memberId matches (no phone in database)');
+          } else if (!authorizedMemberId && authorizedPhone) {
+            // Member has no memberId in database - accept phone match
+            isVerified = true;
+            console.log('✅ Member verified - phone matches (no memberId in database)');
+          } else {
+            // Has both fields but only one matches - needs admin approval
+            requiresAdminApproval = true;
+            accountStatus = 'pending';
+            verificationStatus = 'pending_admin';
+            console.log('⚠️  Partial match - ' + matchDetails.join(', ') + ' - requires admin approval');
+          }
+        } else {
+          // Found member but nothing matches - needs admin approval
+          requiresAdminApproval = true;
+          accountStatus = 'pending';
+          verificationStatus = 'pending_admin';
+          console.log('⚠️  Member found but no fields match - requires admin approval');
+        }
+      } else {
+        // Member ID not found in authorized list
+        requiresAdminApproval = true;
+        accountStatus = 'pending';
+        verificationStatus = 'pending_admin';
+        console.log('⚠️  Member not in authorized list - requires admin approval');
+      }
+    } catch (verifyError) {
+      console.log('⚠️  Error during verification:', verifyError.message);
+      // On error, default to requiring admin approval for safety
+      requiresAdminApproval = true;
+      accountStatus = 'pending';
+      verificationStatus = 'pending_admin';
+    }
+
+    // If user requires admin approval, return early with pending status message
+    if (requiresAdminApproval) {
+      console.log('⏳ Creating pending user account...');
+    }
 
     // Check if email should be admin (from env)
     const adminEmails = (process.env.ADMIN_EMAILS ?? '')
@@ -111,16 +208,55 @@ router.post('/signup', async (req, res) => {
           throw createError; // User wasn't created, throw the error
         }
       } else {
-        throw createError; // Different error, throw it
-      }
-    }
-
-    // Generate token
-    const token = generateToken(user._id);
-
     console.log('✅ User created successfully:', {
       id: user._id,
       email: user.email,
+      name: user.name,
+      role: user.role,
+      memberId: user.memberId,
+      accountStatus: user.accountStatus,
+      requiresAdminApproval: user.requiresAdminApproval,
+    });
+
+    // Mark authorized member as used if verification successful
+    if (isVerified && authorizedMember) {
+      try {
+        await authorizedMember.markAsUsed(user._id);
+        console.log('✅ Authorized member marked as used');
+      } catch (markError) {
+        console.log('⚠️  Failed to mark authorized member as used:', markError.message);
+      }
+    }
+
+    // If requires admin approval, return special response
+    if (requiresAdminApproval) {
+      console.log('=== SIGNUP PENDING ADMIN APPROVAL ===\n');
+      
+      // Note: In a real production app, you would trigger admin notification here
+      // For now, we're just creating a placeholder for future notification implementation
+      
+      return res.status(201).json({
+        success: true,
+        requiresApproval: true,
+        message: 'Your signup request has been received. Our admin team will review your application within 48 hours. You will be notified once approved. Please try signing in again after approval.',
+        user: {
+          id: user._id,
+          name: user.name,
+          email: user.email,
+          memberId: user.memberId,
+          accountStatus: user.accountStatus,
+        },
+        // Placeholder for future notification implementation
+        notification: {
+          message: 'Admin notification will be implemented in production',
+          estimatedReviewTime: '48 hours',
+        },
+      });
+    }
+
+    // For approved users, proceed with normal flow
+    // Generate token
+    const token = generateToken(user._id email: user.email,
       name: user.name,
       role: user.role,
       memberId: user.memberId,
@@ -264,6 +400,25 @@ router.post('/login', async (req, res) => {
       });
     }
 
+    // Check account approval status
+    if (user.accountStatus === 'pending') {
+      return res.status(403).json({
+        success: false,
+        accountStatus: 'pending',
+        message: 'Your account is pending admin approval. You will be notified within 48 hours. Please try signing in again after approval.',
+        requiresApproval: true,
+      });
+    }
+
+    if (user.accountStatus === 'rejected') {
+      return res.status(403).json({
+        success: false,
+        accountStatus: 'rejected',
+        message: 'Your account registration was not approved. Please contact support for more information.',
+        rejectionReason: user.rejectionReason || 'No reason provided',
+      });
+    }
+
     // Generate token
     const token = generateToken(user._id);
 
@@ -277,6 +432,8 @@ router.post('/login', async (req, res) => {
         role: user.role,
         phone: user.phone,
         memberId: user.memberId,
+        accountStatus: user.accountStatus,
+        verificationStatus: user.verificationStatus,
       },
     });
   } catch (error) {

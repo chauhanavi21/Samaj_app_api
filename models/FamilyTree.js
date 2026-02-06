@@ -97,4 +97,36 @@ familyTreeSchema.pre('save', function (next) {
   next();
 });
 
+// After saving, sync occupation to AuthorizedMember
+familyTreeSchema.post('save', async function(doc) {
+  try {
+    const AuthorizedMember = require('./AuthorizedMember');
+    const User = require('./User');
+    
+    // Get the user who created this entry
+    const user = await User.findById(doc.createdBy);
+    if (!user) return;
+    
+    // If occupation is provided, update the authorized member
+    if (doc.personOccupation) {
+      // Try to find authorized member by memberId or phone
+      const query = {};
+      if (user.memberId) query.memberId = user.memberId;
+      if (user.phone && !user.memberId) query.phoneNumber = user.phone;
+      
+      if (Object.keys(query).length > 0) {
+        const authorizedMember = await AuthorizedMember.findOne(query);
+        
+        if (authorizedMember && authorizedMember.occupation !== doc.personOccupation) {
+          authorizedMember.occupation = doc.personOccupation;
+          await authorizedMember.save();
+          console.log(`✅ Updated occupation for member ${user.memberId || user.phone}: ${doc.personOccupation}`);
+        }
+      }
+    }
+  } catch (error) {
+    console.log('⚠️  Failed to sync occupation:', error.message);
+  }
+});
+
 module.exports = mongoose.model('FamilyTree', familyTreeSchema);

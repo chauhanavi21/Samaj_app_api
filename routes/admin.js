@@ -3,6 +3,7 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const User = require('../models/User');
+const AuthorizedMember = require('../models/AuthorizedMember');
 const FamilyTree = require('../models/FamilyTree');
 const CommitteeMember = require('../models/CommitteeMember');
 const Sponsor = require('../models/Sponsor');
@@ -655,6 +656,298 @@ router.get('/stats/overview', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to fetch statistics',
+      error: error.message,
+    });
+  }
+});
+
+// ============================================
+// PENDING USER APPROVALS - NEW VERIFICATION SYSTEM
+// ============================================
+
+// @route   GET /api/admin/pending-users
+// @desc    Get all users pending approval
+// @access  Admin only
+router.get('/pending-users', async (req, res) => {
+  try {
+    const { page = 1, limit = 20, search = '' } = req.query;
+    
+    const query = { accountStatus: 'pending' };
+    
+    // Add search if provided
+    if (search) {
+      query.$or = [
+        { name: { $regex: search, $options: 'i' } },
+        { email: { $regex: search, $options: 'i' } },
+        { memberId: { $regex: search, $options: 'i' } },
+        { phone: { $regex: search, $options: 'i' } },
+      ];
+    }
+    
+    const pendingUsers = await User.find(query)
+      .select('-password')
+      .sort({ createdAt: -1 })
+      .limit(limit * 1)
+      .skip((page - 1) * limit);
+    
+    const total = await User.countDocuments(query);
+    
+    // For each pending user, check if their member ID exists in authorized list
+    const usersWithDetails = await Promise.all(
+      pendingUsers.map(async (user) => {
+        const authorizedMember = await AuthorizedMember.findOne({ 
+          memberId: user.memberId 
+        });
+        
+        let matchStatus = 'not_found';
+        let matchDetails = {};
+        
+        if (authorizedMember) {
+          const userPhone = user.phone?.replace(/[\s\-\(\)]/g, '').trim() || '';
+          const authPhone = authorizedMember.phoneNumber?.replace(/[\s\-\(\)]/g, '').trim() || '';
+          
+          if (userPhone === authPhone) {
+            matchStatus = 'exact_match';
+          } else {
+            matchStatus = 'phone_mismatch';
+          }
+          
+          matchDetails = {
+            authorizedPhone: authorizedMember.phoneNumber,
+            userPhone: user.phone,
+            authorizedName: authorizedMember.name,
+          };
+        }
+        
+        return {
+          ...user.toObject(),
+          matchStatus,
+          matchDetails,
+        };
+      })
+    );
+    
+    res.json({
+      success: true,
+      data: usersWithDetails,
+      pagination: {
+        total,
+        page: parseInt(page),
+        pages: Math.ceil(total / limit),
+        limit: parseInt(limit),
+      },
+    });
+  } catch (error) {
+    console.error('Get pending users error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch pending users',
+      error: error.message,
+    });
+  }
+});
+
+// @route   GET /api/admin/pending-users/count
+// @desc    Get count of pending users (for notifications)
+// @access  Admin only
+router.get('/pending-users/count', async (req, res) => {
+  try {
+    const count = await User.countDocuments({ accountStatus: 'pending' });
+    
+    res.json({
+      success: true,
+      count,
+    });
+  } catch (error) {
+    console.error('Get pending users count error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch pending users count',
+      error: error.message,
+    });
+  }
+});
+
+// @route   POST /api/admin/pending-users/:id/approve
+// @desc    Approve a pending user
+// @access  Admin only
+router.post('/pending-users/:id/approve', async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id);
+    
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found',
+      });
+    }
+    
+    if (user.accountStatus !== 'pending') {
+      return res.status(400).json({
+        success: false,
+        message: 'User is not in pending status',
+      });
+    }
+    
+    // Update user status
+    user.accountStatus = 'approved';
+    user.verificationStatus = 'verified';
+    user.requiresAdminApproval = false;
+    user.reviewedBy = req.user._id;
+    user.reviewedAt = new Date();
+    
+    await user.save();
+    
+    console.log(`✅ Admin ${req.user.email} approved user ${user.email}`);
+    
+    // TODO: Send notification to user (email/SMS)
+    // This is a placeholder for future notification implementation
+    // In production, you would call: await sendApprovalNotification(user);
+    
+    res.json({
+      success: true,
+      message: 'User approved successfully',
+      data: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        accountStatus: user.accountStatus,
+      },
+      notification: {
+        placeholder: 'User notification will be implemented in production',
+        message: 'Email/SMS notification would be sent here',
+      },
+    });
+  } catch (error) {
+    console.error('Approve user error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to approve user',
+      error: error.message,
+    });
+  }
+});
+
+// @route   POST /api/admin/pending-users/:id/reject
+// @desc    Reject a pending user
+// @access  Admin only
+router.post('/pending-users/:id/reject', async (req, res) => {
+  try {
+    const { reason } = req.body;
+    
+    const user = await User.findById(req.params.id);
+    
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found',
+      });
+    }
+    
+    if (user.accountStatus !== 'pending') {
+      return res.status(400).json({
+        success: false,
+        message: 'User is not in pending status',
+      });
+    }
+    
+    // Update user status
+    user.accountStatus = 'rejected';
+    user.verificationStatus = 'unverified';
+    user.requiresAdminApproval = false;
+    user.reviewedBy = req.user._id;
+    user.reviewedAt = new Date();
+    user.rejectionReason = reason || 'No reason provided';
+    
+    await user.save();
+    
+    console.log(`❌ Admin ${req.user.email} rejected user ${user.email}`);
+    
+    // TODO: Send notification to user (email/SMS)
+    // This is a placeholder for future notification implementation
+    // In production, you would call: await sendRejectionNotification(user, reason);
+    
+    res.json({
+      success: true,
+      message: 'User rejected successfully',
+      data: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        accountStatus: user.accountStatus,
+        rejectionReason: user.rejectionReason,
+      },
+      notification: {
+        placeholder: 'User notification will be implemented in production',
+        message: 'Email/SMS notification would be sent here',
+      },
+    });
+  } catch (error) {
+    console.error('Reject user error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to reject user',
+      error: error.message,
+    });
+  }
+});
+
+// @route   GET /api/admin/authorized-members
+// @desc    Get all authorized members from Excel import
+// @access  Admin only
+router.get('/authorized-members', async (req, res) => {
+  try {
+    const { page = 1, limit = 50, search = '', status = 'all' } = req.query;
+    
+    const query = {};
+    
+    // Filter by usage status
+    if (status === 'used') {
+      query.isUsed = true;
+    } else if (status === 'unused') {
+      query.isUsed = false;
+    }
+    
+    // Add search if provided
+    if (search) {
+      query.$or = [
+        { memberId: { $regex: search, $options: 'i' } },
+        { phoneNumber: { $regex: search, $options: 'i' } },
+        { name: { $regex: search, $options: 'i' } },
+        { email: { $regex: search, $options: 'i' } },
+      ];
+    }
+    
+    const members = await AuthorizedMember.find(query)
+      .populate('usedBy', 'name email')
+      .sort({ importedAt: -1 })
+      .limit(limit * 1)
+      .skip((page - 1) * limit);
+    
+    const total = await AuthorizedMember.countDocuments(query);
+    const usedCount = await AuthorizedMember.countDocuments({ isUsed: true });
+    const unusedCount = await AuthorizedMember.countDocuments({ isUsed: false });
+    
+    res.json({
+      success: true,
+      data: members,
+      pagination: {
+        total,
+        page: parseInt(page),
+        pages: Math.ceil(total / limit),
+        limit: parseInt(limit),
+      },
+      stats: {
+        total,
+        used: usedCount,
+        unused: unusedCount,
+      },
+    });
+  } catch (error) {
+    console.error('Get authorized members error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch authorized members',
       error: error.message,
     });
   }
