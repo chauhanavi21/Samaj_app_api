@@ -72,6 +72,8 @@ app.use('/api/admin/content', require('./routes/adminContent'));
 // Serve uploaded files
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
+app.use('/api/information', require('./routes/information'));
+
 // Health check
 app.get('/api/health', (req, res) => {
   res.json({
