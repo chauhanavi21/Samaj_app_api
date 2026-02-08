@@ -1,25 +1,69 @@
 const mongoose = require('mongoose');
 
 /**
- * Information model
+ * Information model aligned with Excel columns:
+ * - Member_Id
+ * - First name
+ * - middle name
+ * - Last Name
+ * - number
  *
- * This schema stores arbitrary information imported from an Excel sheet. Fields
- * such as `name`, `number` and `memberId` are defined explicitly to
- * support searching and display in the client. Any additional columns
- * present in the spreadsheet will be preserved in the `otherFields`
- * property. Using a mixed type for `otherFields` allows documents with
- * incomplete data to be stored without validation failures.
+ * We keep normalized fields for searching/display, plus optional raw backup.
  */
 const informationSchema = new mongoose.Schema(
   {
-    // Person's name. May be null if the source data is missing
-    name: { type: String, default: null },
-    // Contact number. Stored as a string to preserve formatting. May be null
-    number: { type: String, default: null },
-    // Member ID assigned by the organisation. May be null
-    memberId: { type: String, default: null },
-    // Any extra columns from the spreadsheet are stored here
-    otherFields: { type: mongoose.Schema.Types.Mixed, default: {} },
+    // Excel: Member_Id
+    memberId: {
+      type: String,
+      default: null,
+      trim: true,
+      index: true,
+    },
+
+    // Excel: First name
+    firstName: {
+      type: String,
+      default: null,
+      trim: true,
+      index: true,
+    },
+
+    // Excel: middle name
+    middleName: {
+      type: String,
+      default: null,
+      trim: true,
+    },
+
+    // Excel: Last Name
+    lastName: {
+      type: String,
+      default: null,
+      trim: true,
+      index: true,
+    },
+
+    // Computed from first/middle/last
+    fullName: {
+      type: String,
+      default: null,
+      trim: true,
+      index: true,
+    },
+
+    // Excel: number
+    number: {
+      type: String,
+      default: null,
+      trim: true,
+      index: true,
+    },
+
+    // Preserve any extra columns from Excel
+    otherFields: {
+      type: mongoose.Schema.Types.Mixed,
+      default: {},
+    },
   },
   { timestamps: true }
 );
