@@ -19,19 +19,25 @@ async function listWithPagination(collectionName, req, res, { searchFields = [] 
   const { page, limit, skip } = parsePagination(req.query);
   const search = String(req.query.search || '').trim();
 
-  // Get active documents
+  // Get active documents.
+  // NOTE: Avoid Firestore composite index requirements (where + orderBy) by sorting in memory.
   let data = await queryDocuments(
     collectionName,
-    [{ field: 'isActive', operator: '==', value: true }],
-    'order',
-    'asc'
+    [{ field: 'isActive', operator: '==', value: true }]
   );
+
+  const normalizeOrder = (value) => {
+    const num = Number(value);
+    return Number.isFinite(num) ? num : Number.MAX_SAFE_INTEGER;
+  };
+
+  data.sort((a, b) => normalizeOrder(a.order) - normalizeOrder(b.order));
   
   // Apply search filter
   if (search && searchFields.length > 0) {
     const searchLower = search.toLowerCase();
-    data = data.filter(doc =>
-      searchFields.some(field => doc[field]?.toLowerCase().includes(searchLower))
+    data = data.filter((doc) =>
+      searchFields.some((field) => String(doc?.[field] ?? '').toLowerCase().includes(searchLower))
     );
   }
 

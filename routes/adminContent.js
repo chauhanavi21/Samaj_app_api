@@ -32,8 +32,8 @@ async function listAdmin(collectionName, req, res, { sort = { order: 1, createdA
   // Apply search filter
   if (search && searchFields.length > 0) {
     const searchLower = search.toLowerCase();
-    data = data.filter(doc =>
-      searchFields.some(field => doc[field]?.toLowerCase().includes(searchLower))
+    data = data.filter((doc) =>
+      searchFields.some((field) => String(doc?.[field] ?? '').toLowerCase().includes(searchLower))
     );
   }
 
