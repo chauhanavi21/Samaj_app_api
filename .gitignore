@@ -13,6 +13,9 @@ yarn.lock
 .env.test.local
 .env.production.local
 
+# Firebase Service Account Key (NEVER commit this!)
+serviceAccountKey.json
+
 # Expo
 .expo/
 .expo-shared/
