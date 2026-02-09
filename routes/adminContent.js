@@ -1,12 +1,15 @@
 const express = require('express');
-
 const { protect, authorize } = require('../middleware/auth');
-
-const CommitteeMember = require('../models/CommitteeMember');
-const Sponsor = require('../models/Sponsor');
-const SpecialOffer = require('../models/SpecialOffer');
-const UpcomingEvent = require('../models/UpcomingEvent');
-const SpiritualPlace = require('../models/SpiritualPlace');
+const {
+  COLLECTIONS,
+  getAllDocuments,
+  getDocumentById,
+  createDocument,
+  updateDocument,
+  deleteDocument,
+  queryDocuments,
+  countDocuments,
+} = require('../config/firestore');
 
 const router = express.Router();
 
@@ -19,29 +22,28 @@ function parsePagination(query) {
   return { page, limit, skip };
 }
 
-async function listAdmin(model, req, res, { filter = {}, sort = { order: 1, createdAt: -1 } } = {}) {
+async function listAdmin(collectionName, req, res, { sort = { order: 1, createdAt: -1 }, searchFields = [] } = {}) {
   const { page, limit, skip } = parsePagination(req.query);
   const search = String(req.query.search || '').trim();
 
-  const queryFilter = { ...filter };
-  if (search) {
-    // caller can pass a $or on filter; if not, just ignore
+  // Get all documents
+  let data = await getAllDocuments(collectionName, 'order', 'asc');
+  
+  // Apply search filter
+  if (search && searchFields.length > 0) {
+    const searchLower = search.toLowerCase();
+    data = data.filter(doc =>
+      searchFields.some(field => doc[field]?.toLowerCase().includes(searchLower))
+    );
   }
 
-  const [total, data] = await Promise.all([
-    model.countDocuments(queryFilter),
-    model
-      .find(queryFilter)
-      .sort(sort)
-      .skip(skip)
-      .limit(limit),
-  ]);
-
+  const total = data.length;
+  const paginatedData = data.slice(skip, skip + limit);
   const totalPages = Math.max(1, Math.ceil(total / limit));
 
   res.json({
     success: true,
-    data,
+    data: paginatedData,
     pagination: {
       page,
       limit,
@@ -66,18 +68,9 @@ function requireFields(body, fields) {
 // -----------------------------
 router.get('/committee', async (req, res) => {
   try {
-    const search = String(req.query.search || '').trim();
-    const filter = {};
-    if (search) {
-      filter.$or = [
-        { nameEn: { $regex: search, $options: 'i' } },
-        { nameHi: { $regex: search, $options: 'i' } },
-        { city: { $regex: search, $options: 'i' } },
-        { phone: { $regex: search, $options: 'i' } },
-      ];
-    }
-
-    await listAdmin(CommitteeMember, req, res, { filter });
+    await listAdmin(COLLECTIONS.COMMITTEE_MEMBERS, req, res, {
+      searchFields: ['nameEn', 'nameHi', 'city', 'phone']
+    });
   } catch (error) {
     console.error('Admin list committee error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch committee members' });
@@ -91,7 +84,7 @@ router.post('/committee', async (req, res) => {
       return res.status(400).json({ success: false, message: `Missing required field: ${missing}` });
     }
 
-    const created = await CommitteeMember.create({
+    const created = await createDocument(COLLECTIONS.COMMITTEE_MEMBERS, {
       nameEn: req.body.nameEn,
       nameHi: req.body.nameHi,
       phone: req.body.phone,
@@ -109,18 +102,15 @@ router.post('/committee', async (req, res) => {
 
 router.put('/committee/:id', async (req, res) => {
   try {
-    const updated = await CommitteeMember.findByIdAndUpdate(
-      req.params.id,
-      {
-        ...(req.body.nameEn !== undefined ? { nameEn: req.body.nameEn } : {}),
-        ...(req.body.nameHi !== undefined ? { nameHi: req.body.nameHi } : {}),
-        ...(req.body.phone !== undefined ? { phone: req.body.phone } : {}),
-        ...(req.body.city !== undefined ? { city: req.body.city } : {}),
-        ...(req.body.order !== undefined ? { order: Number(req.body.order) || 0 } : {}),
-        ...(req.body.isActive !== undefined ? { isActive: !!req.body.isActive } : {}),
-      },
-      { new: true }
-    );
+    const updateData = {};
+    if (req.body.nameEn !== undefined) updateData.nameEn = req.body.nameEn;
+    if (req.body.nameHi !== undefined) updateData.nameHi = req.body.nameHi;
+    if (req.body.phone !== undefined) updateData.phone = req.body.phone;
+    if (req.body.city !== undefined) updateData.city = req.body.city;
+    if (req.body.order !== undefined) updateData.order = Number(req.body.order) || 0;
+    if (req.body.isActive !== undefined) updateData.isActive = !!req.body.isActive;
+
+    const updated = await updateDocument(COLLECTIONS.COMMITTEE_MEMBERS, req.params.id, updateData);
 
     if (!updated) {
       return res.status(404).json({ success: false, message: 'Committee member not found' });
@@ -135,10 +125,7 @@ router.put('/committee/:id', async (req, res) => {
 
 router.delete('/committee/:id', async (req, res) => {
   try {
-    const deleted = await CommitteeMember.findByIdAndDelete(req.params.id);
-    if (!deleted) {
-      return res.status(404).json({ success: false, message: 'Committee member not found' });
-    }
+    await deleteDocument(COLLECTIONS.COMMITTEE_MEMBERS, req.params.id);
     res.json({ success: true, message: 'Deleted' });
   } catch (error) {
     console.error('Admin delete committee error:', error);
@@ -151,17 +138,9 @@ router.delete('/committee/:id', async (req, res) => {
 // -----------------------------
 router.get('/sponsors', async (req, res) => {
   try {
-    const search = String(req.query.search || '').trim();
-    const filter = {};
-    if (search) {
-      filter.$or = [
-        { name: { $regex: search, $options: 'i' } },
-        { amount: { $regex: search, $options: 'i' } },
-        { phone: { $regex: search, $options: 'i' } },
-      ];
-    }
-
-    await listAdmin(Sponsor, req, res, { filter });
+    await listAdmin(COLLECTIONS.SPONSORS, req, res, {
+      searchFields: ['name', 'amount', 'phone']
+    });
   } catch (error) {
     console.error('Admin list sponsors error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch sponsors' });
@@ -175,7 +154,7 @@ router.post('/sponsors', async (req, res) => {
       return res.status(400).json({ success: false, message: `Missing required field: ${missing}` });
     }
 
-    const created = await Sponsor.create({
+    const created = await createDocument(COLLECTIONS.SPONSORS, {
       name: req.body.name,
       amount: req.body.amount,
       phone: req.body.phone,
@@ -192,17 +171,14 @@ router.post('/sponsors', async (req, res) => {
 
 router.put('/sponsors/:id', async (req, res) => {
   try {
-    const updated = await Sponsor.findByIdAndUpdate(
-      req.params.id,
-      {
-        ...(req.body.name !== undefined ? { name: req.body.name } : {}),
-        ...(req.body.amount !== undefined ? { amount: req.body.amount } : {}),
-        ...(req.body.phone !== undefined ? { phone: req.body.phone } : {}),
-        ...(req.body.order !== undefined ? { order: Number(req.body.order) || 0 } : {}),
-        ...(req.body.isActive !== undefined ? { isActive: !!req.body.isActive } : {}),
-      },
-      { new: true }
-    );
+    const updateData = {};
+    if (req.body.name !== undefined) updateData.name = req.body.name;
+    if (req.body.amount !== undefined) updateData.amount = req.body.amount;
+    if (req.body.phone !== undefined) updateData.phone = req.body.phone;
+    if (req.body.order !== undefined) updateData.order = Number(req.body.order) || 0;
+    if (req.body.isActive !== undefined) updateData.isActive = !!req.body.isActive;
+
+    const updated = await updateDocument(COLLECTIONS.SPONSORS, req.params.id, updateData);
 
     if (!updated) {
       return res.status(404).json({ success: false, message: 'Sponsor not found' });
@@ -217,10 +193,7 @@ router.put('/sponsors/:id', async (req, res) => {
 
 router.delete('/sponsors/:id', async (req, res) => {
   try {
-    const deleted = await Sponsor.findByIdAndDelete(req.params.id);
-    if (!deleted) {
-      return res.status(404).json({ success: false, message: 'Sponsor not found' });
-    }
+    await deleteDocument(COLLECTIONS.SPONSORS, req.params.id);
     res.json({ success: true, message: 'Deleted' });
   } catch (error) {
     console.error('Admin delete sponsor error:', error);
@@ -233,19 +206,9 @@ router.delete('/sponsors/:id', async (req, res) => {
 // -----------------------------
 router.get('/offers', async (req, res) => {
   try {
-    const search = String(req.query.search || '').trim();
-    const filter = {};
-    if (search) {
-      filter.$or = [
-        { title: { $regex: search, $options: 'i' } },
-        { description: { $regex: search, $options: 'i' } },
-        { category: { $regex: search, $options: 'i' } },
-        { validityText: { $regex: search, $options: 'i' } },
-        { badgeText: { $regex: search, $options: 'i' } },
-      ];
-    }
-
-    await listAdmin(SpecialOffer, req, res, { filter });
+    await listAdmin(COLLECTIONS.SPECIAL_OFFERS, req, res, {
+      searchFields: ['title', 'description', 'category', 'validityText', 'badgeText']
+    });
   } catch (error) {
     console.error('Admin list offers error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch offers' });
@@ -259,7 +222,7 @@ router.post('/offers', async (req, res) => {
       return res.status(400).json({ success: false, message: `Missing required field: ${missing}` });
     }
 
-    const created = await SpecialOffer.create({
+    const created = await createDocument(COLLECTIONS.SPECIAL_OFFERS, {
       title: req.body.title,
       description: req.body.description,
       category: req.body.category,
@@ -279,20 +242,17 @@ router.post('/offers', async (req, res) => {
 
 router.put('/offers/:id', async (req, res) => {
   try {
-    const updated = await SpecialOffer.findByIdAndUpdate(
-      req.params.id,
-      {
-        ...(req.body.title !== undefined ? { title: req.body.title } : {}),
-        ...(req.body.description !== undefined ? { description: req.body.description } : {}),
-        ...(req.body.category !== undefined ? { category: req.body.category } : {}),
-        ...(req.body.validityText !== undefined ? { validityText: req.body.validityText } : {}),
-        ...(req.body.badgeText !== undefined ? { badgeText: req.body.badgeText } : {}),
-        ...(req.body.badgeColor !== undefined ? { badgeColor: req.body.badgeColor } : {}),
-        ...(req.body.order !== undefined ? { order: Number(req.body.order) || 0 } : {}),
-        ...(req.body.isActive !== undefined ? { isActive: !!req.body.isActive } : {}),
-      },
-      { new: true }
-    );
+    const updateData = {};
+    if (req.body.title !== undefined) updateData.title = req.body.title;
+    if (req.body.description !== undefined) updateData.description = req.body.description;
+    if (req.body.category !== undefined) updateData.category = req.body.category;
+    if (req.body.validityText !== undefined) updateData.validityText = req.body.validityText;
+    if (req.body.badgeText !== undefined) updateData.badgeText = req.body.badgeText;
+    if (req.body.badgeColor !== undefined) updateData.badgeColor = req.body.badgeColor;
+    if (req.body.order !== undefined) updateData.order = Number(req.body.order) || 0;
+    if (req.body.isActive !== undefined) updateData.isActive = !!req.body.isActive;
+
+    const updated = await updateDocument(COLLECTIONS.SPECIAL_OFFERS, req.params.id, updateData);
 
     if (!updated) {
       return res.status(404).json({ success: false, message: 'Offer not found' });
@@ -307,10 +267,7 @@ router.put('/offers/:id', async (req, res) => {
 
 router.delete('/offers/:id', async (req, res) => {
   try {
-    const deleted = await SpecialOffer.findByIdAndDelete(req.params.id);
-    if (!deleted) {
-      return res.status(404).json({ success: false, message: 'Offer not found' });
-    }
+    await deleteDocument(COLLECTIONS.SPECIAL_OFFERS, req.params.id);
     res.json({ success: true, message: 'Deleted' });
   } catch (error) {
     console.error('Admin delete offer error:', error);
@@ -323,20 +280,9 @@ router.delete('/offers/:id', async (req, res) => {
 // -----------------------------
 router.get('/events', async (req, res) => {
   try {
-    const search = String(req.query.search || '').trim();
-    const filter = {};
-    if (search) {
-      filter.$or = [
-        { category: { $regex: search, $options: 'i' } },
-        { title: { $regex: search, $options: 'i' } },
-        { date: { $regex: search, $options: 'i' } },
-        { time: { $regex: search, $options: 'i' } },
-        { location: { $regex: search, $options: 'i' } },
-        { description: { $regex: search, $options: 'i' } },
-      ];
-    }
-
-    await listAdmin(UpcomingEvent, req, res, { filter });
+    await listAdmin(COLLECTIONS.UPCOMING_EVENTS, req, res, {
+      searchFields: ['category', 'title', 'date', 'time', 'location', 'description']
+    });
   } catch (error) {
     console.error('Admin list events error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch events' });
@@ -350,7 +296,7 @@ router.post('/events', async (req, res) => {
       return res.status(400).json({ success: false, message: `Missing required field: ${missing}` });
     }
 
-    const created = await UpcomingEvent.create({
+    const created = await createDocument(COLLECTIONS.UPCOMING_EVENTS, {
       category: req.body.category,
       title: req.body.title,
       date: req.body.date,
@@ -370,20 +316,17 @@ router.post('/events', async (req, res) => {
 
 router.put('/events/:id', async (req, res) => {
   try {
-    const updated = await UpcomingEvent.findByIdAndUpdate(
-      req.params.id,
-      {
-        ...(req.body.category !== undefined ? { category: req.body.category } : {}),
-        ...(req.body.title !== undefined ? { title: req.body.title } : {}),
-        ...(req.body.date !== undefined ? { date: req.body.date } : {}),
-        ...(req.body.time !== undefined ? { time: req.body.time } : {}),
-        ...(req.body.location !== undefined ? { location: req.body.location } : {}),
-        ...(req.body.description !== undefined ? { description: req.body.description } : {}),
-        ...(req.body.order !== undefined ? { order: Number(req.body.order) || 0 } : {}),
-        ...(req.body.isActive !== undefined ? { isActive: !!req.body.isActive } : {}),
-      },
-      { new: true }
-    );
+    const updateData = {};
+    if (req.body.category !== undefined) updateData.category = req.body.category;
+    if (req.body.title !== undefined) updateData.title = req.body.title;
+    if (req.body.date !== undefined) updateData.date = req.body.date;
+    if (req.body.time !== undefined) updateData.time = req.body.time;
+    if (req.body.location !== undefined) updateData.location = req.body.location;
+    if (req.body.description !== undefined) updateData.description = req.body.description;
+    if (req.body.order !== undefined) updateData.order = Number(req.body.order) || 0;
+    if (req.body.isActive !== undefined) updateData.isActive = !!req.body.isActive;
+
+    const updated = await updateDocument(COLLECTIONS.UPCOMING_EVENTS, req.params.id, updateData);
 
     if (!updated) {
       return res.status(404).json({ success: false, message: 'Event not found' });
@@ -398,10 +341,7 @@ router.put('/events/:id', async (req, res) => {
 
 router.delete('/events/:id', async (req, res) => {
   try {
-    const deleted = await UpcomingEvent.findByIdAndDelete(req.params.id);
-    if (!deleted) {
-      return res.status(404).json({ success: false, message: 'Event not found' });
-    }
+    await deleteDocument(COLLECTIONS.UPCOMING_EVENTS, req.params.id);
     res.json({ success: true, message: 'Deleted' });
   } catch (error) {
     console.error('Admin delete event error:', error);
@@ -414,16 +354,9 @@ router.delete('/events/:id', async (req, res) => {
 // -----------------------------
 router.get('/places', async (req, res) => {
   try {
-    const search = String(req.query.search || '').trim();
-    const filter = {};
-    if (search) {
-      filter.$or = [
-        { name: { $regex: search, $options: 'i' } },
-        { address: { $regex: search, $options: 'i' } },
-      ];
-    }
-
-    await listAdmin(SpiritualPlace, req, res, { filter });
+    await listAdmin(COLLECTIONS.SPIRITUAL_PLACES, req, res, {
+      searchFields: ['name', 'address']
+    });
   } catch (error) {
     console.error('Admin list places error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch places' });
@@ -437,7 +370,7 @@ router.post('/places', async (req, res) => {
       return res.status(400).json({ success: false, message: `Missing required field: ${missing}` });
     }
 
-    const created = await SpiritualPlace.create({
+    const created = await createDocument(COLLECTIONS.SPIRITUAL_PLACES, {
       name: req.body.name,
       address: req.body.address,
       googleMapsLink: req.body.googleMapsLink || '',
@@ -454,17 +387,14 @@ router.post('/places', async (req, res) => {
 
 router.put('/places/:id', async (req, res) => {
   try {
-    const updated = await SpiritualPlace.findByIdAndUpdate(
-      req.params.id,
-      {
-        ...(req.body.name !== undefined ? { name: req.body.name } : {}),
-        ...(req.body.address !== undefined ? { address: req.body.address } : {}),
-        ...(req.body.googleMapsLink !== undefined ? { googleMapsLink: req.body.googleMapsLink } : {}),
-        ...(req.body.order !== undefined ? { order: Number(req.body.order) || 0 } : {}),
-        ...(req.body.isActive !== undefined ? { isActive: !!req.body.isActive } : {}),
-      },
-      { new: true }
-    );
+    const updateData = {};
+    if (req.body.name !== undefined) updateData.name = req.body.name;
+    if (req.body.address !== undefined) updateData.address = req.body.address;
+    if (req.body.googleMapsLink !== undefined) updateData.googleMapsLink = req.body.googleMapsLink;
+    if (req.body.order !== undefined) updateData.order = Number(req.body.order) || 0;
+    if (req.body.isActive !== undefined) updateData.isActive = !!req.body.isActive;
+
+    const updated = await updateDocument(COLLECTIONS.SPIRITUAL_PLACES, req.params.id, updateData);
 
     if (!updated) {
       return res.status(404).json({ success: false, message: 'Place not found' });
@@ -479,10 +409,7 @@ router.put('/places/:id', async (req, res) => {
 
 router.delete('/places/:id', async (req, res) => {
   try {
-    const deleted = await SpiritualPlace.findByIdAndDelete(req.params.id);
-    if (!deleted) {
-      return res.status(404).json({ success: false, message: 'Place not found' });
-    }
+    await deleteDocument(COLLECTIONS.SPIRITUAL_PLACES, req.params.id);
     res.json({ success: true, message: 'Deleted' });
   } catch (error) {
     console.error('Admin delete place error:', error);

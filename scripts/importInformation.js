@@ -1,19 +1,24 @@
-/*
- * Import script: all_info.xlsx -> information collection
- *
- * Place all_info.xlsx in backend root folder.
- * Run:
- *   npm install xlsx
- *   npm run import-info
+/**
+ * Import Excel sheet with information into Firestore
+ * 
+ * Usage:
+ * node scripts/importInformation.js <path-to-excel-file>
+ * 
+ * Excel file should have columns:
+ * - Member_Id (or similar variations)
+ * - First name
+ * - middle name
+ * - Last Name
+ * - number (phone)
+ * 
+ * Optional: any other columns will be stored in otherFields
  */
 
-const mongoose = require('mongoose');
+const XLSX = require('xlsx');
 const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '../.env') });
-const xlsx = require('xlsx');
 
-const Information = require('../models/Information');
-
+const { db, admin, COLLECTIONS, createDocument, findOneDocument } = require('../config/firestore');
 
 function normalizeKey(key = '') {
   return String(key).trim().toLowerCase().replace(/\s+/g, ' ');
@@ -41,91 +46,138 @@ function buildFullName(firstName, middleName, lastName) {
 
 async function importData() {
   try {
-    const mongoUri = process.env.MONGO_URI || process.env.MONGODB_URI;
-    if (!mongoUri) {
-      throw new Error('Missing Mongo URI. Set MONGO_URI or DATABASE in env/config.env');
-    }
+    // Get file path from command line arguments
+    const filePath = process.argv[2] || path.join(__dirname, '..', 'all_info.xls');
 
-    await mongoose.connect(mongoUri);
+    console.log('📁 Reading Excel file:', filePath);
 
-    const filePath = path.join(__dirname, '..', 'all_info.xls');
-    const workbook = xlsx.readFile(filePath);
+    const workbook = XLSX.readFile(filePath);
     const firstSheetName = workbook.SheetNames[0];
     const sheet = workbook.Sheets[firstSheetName];
 
-    const rows = xlsx.utils.sheet_to_json(sheet, { defval: null });
+    const rows = XLSX.utils.sheet_to_json(sheet, { defval: null });
 
-    const docs = rows.map((row) => {
-      const firstName = toCleanString(
-        readField(row, ['First name', 'first name', 'firstname', 'first_name'])
-      );
-      const middleName = toCleanString(
-        readField(row, ['middle name', 'Middle name', 'middlename', 'middle_name'])
-      );
-      const lastName = toCleanString(
-        readField(row, ['Last Name', 'last name', 'lastname', 'last_name'])
-      );
+    console.log(`📊 Found ${rows.length} rows in Excel file`);
+    console.log('🔥 Connected to Firestore');
 
-      const memberId = toCleanString(
-        readField(row, ['Member_Id', 'member_id', 'member id', 'Member ID', 'memberId'])
-      );
+    let successCount = 0;
+    let errorCount = 0;
+    let skippedCount = 0;
+    const errors = [];
 
-      const number = toCleanString(
-        readField(row, ['number', 'Number', 'phone', 'mobile', 'contact'])
-      );
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
 
-      const fullName = buildFullName(firstName, middleName, lastName);
+      try {
+        const firstName = toCleanString(
+          readField(row, ['First name', 'first name', 'firstname', 'first_name'])
+        );
+        const middleName = toCleanString(
+          readField(row, ['middle name', 'Middle name', 'middlename', 'middle_name'])
+        );
+        const lastName = toCleanString(
+          readField(row, ['Last Name', 'last name', 'lastname', 'last_name'])
+        );
 
-      // Keep extra columns in otherFields
-      const usedKeysNormalized = new Set(
-        [
-          'first name',
-          'firstname',
-          'first_name',
-          'middle name',
-          'middlename',
-          'middle_name',
-          'last name',
-          'lastname',
-          'last_name',
-          'member_id',
-          'member id',
-          'memberid',
-          'number',
-          'phone',
-          'mobile',
-          'contact',
-        ].map((k) => normalizeKey(k))
-      );
+        const memberId = toCleanString(
+          readField(row, ['Member_Id', 'member_id', 'member id', 'Member ID', 'memberId'])
+        );
 
-      const otherFields = {};
-      Object.keys(row).forEach((key) => {
-        if (!usedKeysNormalized.has(normalizeKey(key))) {
-          otherFields[key] = row[key];
+        const number = toCleanString(
+          readField(row, ['number', 'Number', 'phone', 'mobile', 'contact'])
+        );
+
+        const fullName = buildFullName(firstName, middleName, lastName);
+
+        // Keep extra columns in otherFields
+        const usedKeysNormalized = new Set(
+          [
+            'first name',
+            'firstname',
+            'first_name',
+            'middle name',
+            'middlename',
+            'middle_name',
+            'last name',
+            'lastname',
+            'last_name',
+            'member_id',
+            'member id',
+            'memberid',
+            'number',
+            'phone',
+            'mobile',
+            'contact',
+          ].map((k) => normalizeKey(k))
+        );
+
+        const otherFields = {};
+        Object.keys(row).forEach((key) => {
+          if (!usedKeysNormalized.has(normalizeKey(key))) {
+            const val = toCleanString(row[key]);
+            if (val) {
+              otherFields[key] = val;
+            }
+          }
+        });
+
+        // Check if already exists (by memberId)
+        if (memberId) {
+          const existing = await findOneDocument(COLLECTIONS.INFORMATION, [
+            { field: 'memberId', operator: '==', value: memberId }
+          ]);
+
+          if (existing) {
+            console.log(`ℹ️  Row ${i + 1}: Member ${memberId} already exists - skipping`);
+            skippedCount++;
+            continue;
+          }
         }
-      });
 
-      return {
-        firstName,
-        middleName,
-        lastName,
-        fullName,
-        memberId,
-        number,
-        otherFields,
-      };
-    });
+        // Create information document
+        const infoData = {};
 
-    // User asked to remove wrong data and reinsert correct mapping
-    await Information.deleteMany({});
-    await Information.insertMany(docs);
+        if (memberId) infoData.memberId = memberId;
+        if (firstName) infoData.firstName = firstName;
+        if (middleName) infoData.middleName = middleName;
+        if (lastName) infoData.lastName = lastName;
+        if (fullName) infoData.fullName = fullName;
+        if (number) infoData.number = number;
+        if (Object.keys(otherFields).length > 0) infoData.otherFields = otherFields;
 
-    console.log(`Imported ${docs.length} records into Information collection`);
+        await createDocument(COLLECTIONS.INFORMATION, infoData);
+
+        successCount++;
+        console.log(`✅ Row ${i + 1}: Imported ${fullName || memberId || 'entry'}`);
+
+      } catch (error) {
+        errorCount++;
+        const errorMsg = `Row ${i + 1}: ${error.message}`;
+        errors.push(errorMsg);
+        console.log(`❌ ${errorMsg}`);
+      }
+    }
+
+    console.log('\n=== IMPORT SUMMARY ===');
+    console.log(`✅ Successfully imported: ${successCount}`);
+    console.log(`ℹ️  Skipped (already exists): ${skippedCount}`);
+    console.log(`❌ Errors: ${errorCount}`);
+    console.log(`📊 Total rows processed: ${rows.length}`);
+
+    if (errors.length > 0) {
+      console.log('\n=== ERRORS ===');
+      errors.forEach(err => console.log(err));
+    }
+
+    console.log('\n✅ Import complete');
     process.exit(0);
+
   } catch (error) {
-    console.error('Import failed:', error);
+    console.error('❌ Fatal error:', error.message);
+    console.error(error.stack);
     process.exit(1);
   }
 }
 
+// Run import
 importData();

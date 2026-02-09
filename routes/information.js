@@ -1,8 +1,11 @@
 const express = require('express');
 const router = express.Router();
-
-const Information = require('../models/Information');
 const { protect } = require('../middleware/auth');
+const {
+  COLLECTIONS,
+  getDocumentById,
+  getAllDocuments,
+} = require('../config/firestore');
 
 /**
  * GET /api/information/search?name=<query>
@@ -20,32 +23,46 @@ router.get('/search', protect, async (req, res) => {
       return res.json({ success: true, data: [] });
     }
 
+    // Get all information documents
+    const allInfo = await getAllDocuments(COLLECTIONS.INFORMATION);
+    
     // Token-based flexible search
-    const tokens = raw.split(/\s+/).filter(Boolean);
-
-    const tokenRegexConds = tokens.map((t) => ({
-      $or: [
-        { firstName: { $regex: t, $options: 'i' } },
-        { middleName: { $regex: t, $options: 'i' } },
-        { lastName: { $regex: t, $options: 'i' } },
-        { fullName: { $regex: t, $options: 'i' } },
-      ],
+    const tokens = raw.toLowerCase().split(/\s+/).filter(Boolean);
+    
+    // Filter results based on tokens
+    const results = allInfo.filter(doc => {
+      const firstName = (doc.firstName || '').toLowerCase();
+      const middleName = (doc.middleName || '').toLowerCase();
+      const lastName = (doc.lastName || '').toLowerCase();
+      const fullName = (doc.fullName || '').toLowerCase();
+      const searchLower = raw.toLowerCase();
+      
+      // Check if full name matches
+      if (fullName.includes(searchLower)) return true;
+      
+      // Check if all tokens match somewhere in name fields
+      const allTokensMatch = tokens.every(token =>
+        firstName.includes(token) ||
+        middleName.includes(token) ||
+        lastName.includes(token) ||
+        fullName.includes(token)
+      );
+      
+      return allTokensMatch;
+    }).slice(0, 100); // Limit to 100 results
+    
+    // Only return necessary fields
+    const limitedResults = results.map(doc => ({
+      id: doc.id,
+      firstName: doc.firstName,
+      middleName: doc.middleName,
+      lastName: doc.lastName,
+      fullName: doc.fullName,
+      memberId: doc.memberId,
+      number: doc.number,
     }));
 
-    const fullRegex = new RegExp(raw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
-
-    const query = {
-      $or: [
-        { fullName: { $regex: fullRegex } },
-        { $and: tokenRegexConds }, // all tokens must match somewhere in name fields
-      ],
-    };
-
-    const results = await Information.find(query)
-      .select('firstName middleName lastName fullName memberId number')
-      .limit(100);
-
-    return res.json({ success: true, data: results });
+    return res.json({ success: true, data: limitedResults });
   } catch (error) {
     console.error('Information search failed:', error);
     return res.status(500).json({ success: false, message: 'Server error' });
@@ -57,9 +74,7 @@ router.get('/search', protect, async (req, res) => {
  */
 router.get('/:id', protect, async (req, res) => {
   try {
-    const info = await Information.findById(req.params.id).select(
-      'firstName middleName lastName fullName memberId number otherFields'
-    );
+    const info = await getDocumentById(COLLECTIONS.INFORMATION, req.params.id);
 
     if (!info) {
       return res.status(404).json({ success: false, message: 'Information not found' });

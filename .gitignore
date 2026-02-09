@@ -114,11 +114,15 @@ build/
 dist/
 out/
 
-# Cloudflare/ngrok configs (optional - uncomment if you want to ignore these)
-# cloudflared/
-# ngrok.yml
+# dependencies
+node_modules/
 
-# Documentation that might contain sensitive info (optional)
-# Keep general docs but ignore any that might have keys/secrets
-# *_PRIVATE.md
-# *_SECRET.md
+# environment variables & secrets
+.env
+config.env
+serviceAccountKey.json
+
+# logs
+logs/
+npm-debug.log*
+all_info.xlsx

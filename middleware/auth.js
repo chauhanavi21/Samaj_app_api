@@ -1,5 +1,5 @@
 const jwt = require('jsonwebtoken');
-const User = require('../models/User');
+const { getDocumentById, COLLECTIONS } = require('../config/firestore');
 
 // Protect routes - verify JWT token
 exports.protect = async (req, res, next) => {
@@ -22,15 +22,19 @@ exports.protect = async (req, res, next) => {
       // Verify token
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-      // Get user from token
-      req.user = await User.findById(decoded.id).select('-password');
+      // Get user from Firestore
+      const user = await getDocumentById(COLLECTIONS.USERS, decoded.id);
 
-      if (!req.user) {
+      if (!user) {
         return res.status(401).json({
           success: false,
           message: 'User not found',
         });
       }
+
+      // Remove password from user object
+      delete user.password;
+      req.user = user;
 
       next();
     } catch (error) {

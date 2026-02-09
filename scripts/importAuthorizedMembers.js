@@ -1,5 +1,5 @@
 /**
- * Import Excel sheet with authorized members into MongoDB
+ * Import Excel sheet with authorized members into Firestore
  * 
  * Usage:
  * node scripts/importAuthorizedMembers.js <path-to-excel-file>
@@ -9,11 +9,10 @@
  */
 
 const XLSX = require('xlsx');
-const mongoose = require('mongoose');
 const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '../.env') });
 
-const AuthorizedMember = require('../models/AuthorizedMember');
+const { db, admin, COLLECTIONS, createDocument, findOneDocument } = require('../config/firestore');
 
 async function importExcelData(filePath) {
   try {
@@ -34,14 +33,7 @@ async function importExcelData(filePath) {
       return;
     }
     
-    // Connect to MongoDB
-    console.log('🔌 Connecting to MongoDB...');
-    const mongoUri = process.env.MONGO_URI || process.env.MONGODB_URI;
-    if (!mongoUri) {
-      throw new Error('MongoDB URI not found in environment variables. Please set MONGO_URI or MONGODB_URI in .env file');
-    }
-    await mongoose.connect(mongoUri);
-    console.log('✅ Connected to MongoDB');
+    console.log('🔥 Connected to Firestore');
     
     let successCount = 0;
     let errorCount = 0;
@@ -92,11 +84,19 @@ async function importExcelData(filePath) {
       
       try {
         // Check if member already exists (by memberId or phoneNumber)
-        const query = {};
-        if (memberId) query.memberId = memberId;
-        if (phoneNumber && !memberId) query.phoneNumber = phoneNumber;
+        let existing = null;
         
-        const existing = await AuthorizedMember.findOne(query);
+        if (memberId) {
+          existing = await findOneDocument(COLLECTIONS.AUTHORIZED_MEMBERS, [
+            { field: 'memberId', operator: '==', value: memberId }
+          ]);
+        }
+        
+        if (!existing && phoneNumber) {
+          existing = await findOneDocument(COLLECTIONS.AUTHORIZED_MEMBERS, [
+            { field: 'phoneNumber', operator: '==', value: phoneNumber }
+          ]);
+        }
         
         if (existing) {
           const identifier = memberId || phoneNumber;
@@ -106,16 +106,20 @@ async function importExcelData(filePath) {
         }
         
         // Create new authorized member
-        await AuthorizedMember.create({
-          memberId: memberId || undefined,
-          phoneNumber: phoneNumber || undefined,
-          name: name || undefined,
-          email: email || undefined,
-          notes: notes || undefined,
-        });
+        const memberData = {
+          isUsed: false,
+        };
+        
+        if (memberId) memberData.memberId = memberId;
+        if (phoneNumber) memberData.phoneNumber = phoneNumber;
+        if (name) memberData.name = name;
+        if (email) memberData.email = email;
+        if (notes) memberData.notes = notes;
+        
+        await createDocument(COLLECTIONS.AUTHORIZED_MEMBERS, memberData);
         
         successCount++;
-        console.log(`✅ Row ${i + 1}: Imported member ${memberId}`);
+        console.log(`✅ Row ${i + 1}: Imported member ${memberId || phoneNumber}`);
         
       } catch (error) {
         errorCount++;
@@ -136,8 +140,8 @@ async function importExcelData(filePath) {
       errors.forEach(err => console.log(err));
     }
     
-    await mongoose.connection.close();
-    console.log('\n🔌 MongoDB connection closed');
+    console.log('\n✅ Import complete');
+    process.exit(0);
     
   } catch (error) {
     console.error('❌ Fatal error:', error.message);

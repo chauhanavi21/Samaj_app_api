@@ -2,12 +2,16 @@ const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
 const path = require('path');
-const connectDB = require('./config/db');
+const { admin, db } = require('./firebase');
 const cronJob = require('./config/cron');
 const bootstrapAdmin = require('./scripts/bootstrapAdmin');
 
 // Load env vars
 dotenv.config();
+
+// Initialize Firebase/Firestore
+console.log('🔥 Firebase Admin SDK initialized');
+console.log('🗄️  Firestore database connected');
 
 // Start cron job in production to prevent server spin-down
 if (process.env.NODE_ENV === 'production') {
@@ -15,9 +19,8 @@ if (process.env.NODE_ENV === 'production') {
   console.log('🔄 Cron job started - server will self-ping every 14 minutes');
 }
 
-// Connect to database
-connectDB().then(async () => {
-  // Bootstrap admin account if enabled
+// Bootstrap admin account if enabled
+(async () => {
   if (process.env.ENABLE_ADMIN_BOOTSTRAP === 'true') {
     try {
       await bootstrapAdmin();
@@ -26,7 +29,7 @@ connectDB().then(async () => {
       // Don't stop server if bootstrap fails
     }
   }
-});
+})();
 
 const app = express();
 

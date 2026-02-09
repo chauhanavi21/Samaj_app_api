@@ -1,10 +1,10 @@
 const express = require('express');
-
-const CommitteeMember = require('../models/CommitteeMember');
-const Sponsor = require('../models/Sponsor');
-const SpecialOffer = require('../models/SpecialOffer');
-const UpcomingEvent = require('../models/UpcomingEvent');
-const SpiritualPlace = require('../models/SpiritualPlace');
+const {
+  COLLECTIONS,
+  getAllDocuments,
+  queryDocuments,
+  countDocuments,
+} = require('../config/firestore');
 
 const router = express.Router();
 
@@ -15,23 +15,33 @@ function parsePagination(query) {
   return { page, limit, skip };
 }
 
-async function listWithPagination(model, req, res, { filter = {}, sort = { order: 1, createdAt: -1 } } = {}) {
+async function listWithPagination(collectionName, req, res, { searchFields = [] } = {}) {
   const { page, limit, skip } = parsePagination(req.query);
+  const search = String(req.query.search || '').trim();
 
-  const [total, data] = await Promise.all([
-    model.countDocuments(filter),
-    model
-      .find(filter)
-      .sort(sort)
-      .skip(skip)
-      .limit(limit),
-  ]);
+  // Get active documents
+  let data = await queryDocuments(
+    collectionName,
+    [{ field: 'isActive', operator: '==', value: true }],
+    'order',
+    'asc'
+  );
+  
+  // Apply search filter
+  if (search && searchFields.length > 0) {
+    const searchLower = search.toLowerCase();
+    data = data.filter(doc =>
+      searchFields.some(field => doc[field]?.toLowerCase().includes(searchLower))
+    );
+  }
 
+  const total = data.length;
+  const paginatedData = data.slice(skip, skip + limit);
   const totalPages = Math.max(1, Math.ceil(total / limit));
 
   res.json({
     success: true,
-    data,
+    data: paginatedData,
     pagination: {
       page,
       limit,
@@ -45,19 +55,9 @@ async function listWithPagination(model, req, res, { filter = {}, sort = { order
 // Public content endpoints (no auth)
 router.get('/committee', async (req, res) => {
   try {
-    const search = String(req.query.search || '').trim();
-    const filter = { isActive: true };
-
-    if (search) {
-      filter.$or = [
-        { nameEn: { $regex: search, $options: 'i' } },
-        { nameHi: { $regex: search, $options: 'i' } },
-        { city: { $regex: search, $options: 'i' } },
-        { phone: { $regex: search, $options: 'i' } },
-      ];
-    }
-
-    await listWithPagination(CommitteeMember, req, res, { filter });
+    await listWithPagination(COLLECTIONS.COMMITTEE_MEMBERS, req, res, {
+      searchFields: ['nameEn', 'nameHi', 'city', 'phone']
+    });
   } catch (error) {
     console.error('List committee error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch committee members' });
@@ -66,18 +66,9 @@ router.get('/committee', async (req, res) => {
 
 router.get('/sponsors', async (req, res) => {
   try {
-    const search = String(req.query.search || '').trim();
-    const filter = { isActive: true };
-
-    if (search) {
-      filter.$or = [
-        { name: { $regex: search, $options: 'i' } },
-        { amount: { $regex: search, $options: 'i' } },
-        { phone: { $regex: search, $options: 'i' } },
-      ];
-    }
-
-    await listWithPagination(Sponsor, req, res, { filter });
+    await listWithPagination(COLLECTIONS.SPONSORS, req, res, {
+      searchFields: ['name', 'amount', 'phone']
+    });
   } catch (error) {
     console.error('List sponsors error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch sponsors' });
@@ -86,20 +77,9 @@ router.get('/sponsors', async (req, res) => {
 
 router.get('/offers', async (req, res) => {
   try {
-    const search = String(req.query.search || '').trim();
-    const filter = { isActive: true };
-
-    if (search) {
-      filter.$or = [
-        { title: { $regex: search, $options: 'i' } },
-        { description: { $regex: search, $options: 'i' } },
-        { category: { $regex: search, $options: 'i' } },
-        { validityText: { $regex: search, $options: 'i' } },
-        { badgeText: { $regex: search, $options: 'i' } },
-      ];
-    }
-
-    await listWithPagination(SpecialOffer, req, res, { filter });
+    await listWithPagination(COLLECTIONS.SPECIAL_OFFERS, req, res, {
+      searchFields: ['title', 'description', 'category', 'validityText', 'badgeText']
+    });
   } catch (error) {
     console.error('List offers error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch offers' });
@@ -108,21 +88,9 @@ router.get('/offers', async (req, res) => {
 
 router.get('/events', async (req, res) => {
   try {
-    const search = String(req.query.search || '').trim();
-    const filter = { isActive: true };
-
-    if (search) {
-      filter.$or = [
-        { category: { $regex: search, $options: 'i' } },
-        { title: { $regex: search, $options: 'i' } },
-        { date: { $regex: search, $options: 'i' } },
-        { time: { $regex: search, $options: 'i' } },
-        { location: { $regex: search, $options: 'i' } },
-        { description: { $regex: search, $options: 'i' } },
-      ];
-    }
-
-    await listWithPagination(UpcomingEvent, req, res, { filter });
+    await listWithPagination(COLLECTIONS.UPCOMING_EVENTS, req, res, {
+      searchFields: ['category', 'title', 'date', 'time', 'location', 'description']
+    });
   } catch (error) {
     console.error('List events error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch events' });
@@ -131,17 +99,9 @@ router.get('/events', async (req, res) => {
 
 router.get('/places', async (req, res) => {
   try {
-    const search = String(req.query.search || '').trim();
-    const filter = { isActive: true };
-
-    if (search) {
-      filter.$or = [
-        { name: { $regex: search, $options: 'i' } },
-        { address: { $regex: search, $options: 'i' } },
-      ];
-    }
-
-    await listWithPagination(SpiritualPlace, req, res, { filter });
+    await listWithPagination(COLLECTIONS.SPIRITUAL_PLACES, req, res, {
+      searchFields: ['name', 'address']
+    });
   } catch (error) {
     console.error('List places error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch places' });

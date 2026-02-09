@@ -1,0 +1,120 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isAdmin() {
+      return isAuthenticated() && 
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+    
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    function isApproved() {
+      return isAuthenticated() && 
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.accountStatus == 'approved';
+    }
+    
+    // Users collection
+    match /users/{userId} {
+      // Anyone can read user data except password
+      allow read: if isAuthenticated();
+      
+      // Users can create their own account
+      allow create: if true;
+      
+      // Users can update their own data, admins can update any user
+      allow update: if isOwner(userId) || isAdmin();
+      
+      // Only admins can delete users
+      allow delete: if isAdmin();
+    }
+    
+    // Authorized Members collection
+    match /authorizedMembers/{memberId} {
+      // Anyone can read (needed for signup verification)
+      allow read: if true;
+      
+      // Only admins can create, update, or delete
+      allow create, update, delete: if isAdmin();
+    }
+    
+    // Family Tree collection
+    match /familyTree/{entryId} {
+      // Authenticated users can read all entries
+      allow read: if isAuthenticated() && isApproved();
+      
+      // User can create their own entry
+      allow create: if isAuthenticated() && isApproved() && 
+                       request.resource.data.createdBy == request.auth.uid;
+      
+      // User can update their own entry, admins can update any
+      allow update: if isAuthenticated() && isApproved() && 
+                       (resource.data.createdBy == request.auth.uid || isAdmin());
+      
+      // User can delete their own entry, admins can delete any
+      allow delete: if isAuthenticated() && isApproved() && 
+                       (resource.data.createdBy == request.auth.uid || isAdmin());
+    }
+    
+    // Information collection
+    match /information/{infoId} {
+      // Anyone can read information
+      allow read: if true;
+      
+      // Only admins can create, update, or delete
+      allow create, update, delete: if isAdmin();
+    }
+    
+    // Committee Members collection
+    match /committeeMembers/{memberId} {
+      // Anyone can read
+      allow read: if true;
+      
+      // Only admins can create, update, or delete
+      allow create, update, delete: if isAdmin();
+    }
+    
+    // Sponsors collection
+    match /sponsors/{sponsorId} {
+      // Anyone can read
+      allow read: if true;
+      
+      // Only admins can create, update, or delete
+      allow create, update, delete: if isAdmin();
+    }
+    
+    // Spiritual Places collection
+    match /spiritualPlaces/{placeId} {
+      // Anyone can read
+      allow read: if true;
+      
+      // Only admins can create, update, or delete
+      allow create, update, delete: if isAdmin();
+    }
+    
+    // Special Offers collection
+    match /specialOffers/{offerId} {
+      // Anyone can read
+      allow read: if true;
+      
+      // Only admins can create, update, or delete
+      allow create, update, delete: if isAdmin();
+    }
+    
+    // Upcoming Events collection
+    match /upcomingEvents/{eventId} {
+      // Anyone can read
+      allow read: if true;
+      
+      // Only admins can create, update, or delete
+      allow create, update, delete: if isAdmin();
+    }
+  }
+}

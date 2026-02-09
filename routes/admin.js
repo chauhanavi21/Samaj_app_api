@@ -2,15 +2,18 @@ const express = require('express');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
-const User = require('../models/User');
-const AuthorizedMember = require('../models/AuthorizedMember');
-const FamilyTree = require('../models/FamilyTree');
-const CommitteeMember = require('../models/CommitteeMember');
-const Sponsor = require('../models/Sponsor');
-const SpecialOffer = require('../models/SpecialOffer');
-const UpcomingEvent = require('../models/UpcomingEvent');
-const SpiritualPlace = require('../models/SpiritualPlace');
 const { protect, authorize } = require('../middleware/auth');
+const {
+  COLLECTIONS,
+  getAllDocuments,
+  getDocumentById,
+  createDocument,
+  updateDocument,
+  deleteDocument,
+  queryDocuments,
+  countDocuments,
+  admin
+} = require('../config/firestore');
 
 const router = express.Router();
 
@@ -27,78 +30,88 @@ router.use(protect, authorize('admin'));
 router.get('/dashboard', async (req, res) => {
   try {
     // Get total counts
-    const totalUsers = await User.countDocuments();
-    const totalAdmins = await User.countDocuments({ role: 'admin' });
-    const totalRegularUsers = await User.countDocuments({ role: 'user' });
-    const totalFamilyTreeEntries = await FamilyTree.countDocuments();
+    const totalUsers = await countDocuments(COLLECTIONS.USERS);
+    const totalAdmins = await countDocuments(COLLECTIONS.USERS, [{ field: 'role', operator: '==', value: 'admin' }]);
+    const totalRegularUsers = await countDocuments(COLLECTIONS.USERS, [{ field: 'role', operator: '==', value: 'user' }]);
+    const totalFamilyTreeEntries = await countDocuments(COLLECTIONS.FAMILY_TREE);
+    
+    // Get pending approval users
+    const pendingUsers = await queryDocuments(
+      COLLECTIONS.USERS,
+      [{ field: 'accountStatus', operator: '==', value: 'pending' }],
+      'createdAt',
+      'desc'
+    );
 
     // Get recent signups (last 30 days)
     const thirtyDaysAgo = new Date();
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    const thirtyDaysAgoTimestamp = admin.firestore.Timestamp.fromDate(thirtyDaysAgo);
     
-    const recentSignups = await User.find({
-      createdAt: { $gte: thirtyDaysAgo }
-    })
-      .select('name email role memberId createdAt')
-      .sort({ createdAt: -1 })
-      .limit(10);
+    const recentSignups = await queryDocuments(
+      COLLECTIONS.USERS,
+      [{ field: 'createdAt', operator: '>=', value: thirtyDaysAgoTimestamp }],
+      'createdAt',
+      'desc',
+      10
+    );
 
-    // Get signups per month for the last 6 months
+    // Get signups per month for the last 6 months (simplified for Firestore)
     const sixMonthsAgo = new Date();
     sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+    const sixMonthsAgoTimestamp = admin.firestore.Timestamp.fromDate(sixMonthsAgo);
     
-    const signupTrend = await User.aggregate([
-      {
-        $match: { createdAt: { $gte: sixMonthsAgo } }
-      },
-      {
-        $group: {
-          _id: {
-            year: { $year: '$createdAt' },
-            month: { $month: '$createdAt' }
-          },
-          count: { $sum: 1 }
-        }
-      },
-      {
-        $sort: { '_id.year': 1, '_id.month': 1 }
+    const recentUsers = await queryDocuments(
+      COLLECTIONS.USERS,
+      [{ field: 'createdAt', operator: '>=', value: sixMonthsAgoTimestamp }]
+    );
+    
+    // Group by month
+    const signupTrend = recentUsers.reduce((acc, user) => {
+      const date = user.createdAt.toDate();
+      const year = date.getFullYear();
+      const month = date.getMonth() + 1;
+      const key = `${year}-${month}`;
+      
+      if (!acc[key]) {
+        acc[key] = { _id: { year, month }, count: 0 };
       }
-    ]);
+      acc[key].count++;
+      return acc;
+    }, {});
+    
+    const signupTrendArray = Object.values(signupTrend).sort((a, b) => {
+      if (a._id.year !== b._id.year) return a._id.year - b._id.year;
+      return a._id.month - b._id.month;
+    });
 
     // Get most active users (by family tree entries)
-    const activeUsers = await FamilyTree.aggregate([
-      {
-        $group: {
-          _id: '$createdBy',
-          entryCount: { $sum: 1 }
-        }
-      },
-      {
-        $sort: { entryCount: -1 }
-      },
-      {
-        $limit: 5
-      },
-      {
-        $lookup: {
-          from: 'users',
-          localField: '_id',
-          foreignField: '_id',
-          as: 'user'
-        }
-      },
-      {
-        $unwind: '$user'
-      },
-      {
-        $project: {
-          name: '$user.name',
-          email: '$user.email',
-          memberId: '$user.memberId',
-          entryCount: 1
-        }
-      }
-    ]);
+    const allFamilyTrees = await getAllDocuments(COLLECTIONS.FAMILY_TREE);
+    const userEntryCount = allFamilyTrees.reduce((acc, entry) => {
+      const userId = entry.createdBy;
+      acc[userId] = (acc[userId] || 0) + 1;
+      return acc;
+    }, {});
+    
+    const topUserIds = Object.entries(userEntryCount)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([userId]) => userId);
+    
+    const activeUsers = await Promise.all(
+      topUserIds.map(async (userId) => {
+        const user = await getDocumentById(COLLECTIONS.USERS, userId);
+        return user ? {
+          _id: userId,
+          name: user.name,
+          email: user.email,
+          memberId: user.memberId,
+          entryCount: userEntryCount[userId]
+        } : null;
+      })
+    );
+    
+    const filteredActiveUsers = activeUsers.filter(u => u !== null);
 
     res.json({
       success: true,
@@ -108,17 +121,28 @@ router.get('/dashboard', async (req, res) => {
           admins: totalAdmins,
           regularUsers: totalRegularUsers,
           familyTreeEntries: totalFamilyTreeEntries,
+          pendingApprovals: pendingUsers.length, // Add pending count
         },
+        pendingUsers: pendingUsers.map(user => ({
+          id: user.id,
+          name: user.name,
+          email: user.email,
+          memberId: user.memberId,
+          phone: user.phone,
+          verificationStatus: user.verificationStatus,
+          requiresAdminApproval: user.requiresAdminApproval,
+          createdAt: user.createdAt,
+        })),
         recentSignups: recentSignups.map(user => ({
-          id: user._id,
+          id: user.id,
           name: user.name,
           email: user.email,
           role: user.role,
           memberId: user.memberId,
           createdAt: user.createdAt,
         })),
-        signupTrend,
-        activeUsers,
+        signupTrend: signupTrendArray,
+        activeUsers: filteredActiveUsers,
       },
     });
   } catch (error) {
@@ -241,35 +265,42 @@ router.get('/users', async (req, res) => {
     const search = req.query.search || '';
     const role = req.query.role; // Optional filter by role
 
-    // Build search query
-    let query = {};
+    // Build query conditions
+    let conditions = [];
     
-    if (search) {
-      query.$or = [
-        { name: { $regex: search, $options: 'i' } },
-        { email: { $regex: search, $options: 'i' } },
-        { memberId: { $regex: search, $options: 'i' } },
-        { phone: { $regex: search, $options: 'i' } },
-      ];
-    }
-
     if (role && ['user', 'admin'].includes(role)) {
-      query.role = role;
+      conditions.push({ field: 'role', operator: '==', value: role });
     }
 
+    // Get all users matching conditions (we'll filter search in memory)
+    let users = await queryDocuments(
+      COLLECTIONS.USERS,
+      conditions,
+      'createdAt',
+      'desc'
+    );
+    
+    // Apply search filter
+    if (search) {
+      const searchLower = search.toLowerCase();
+      users = users.filter(user =>
+        user.name?.toLowerCase().includes(searchLower) ||
+        user.email?.toLowerCase().includes(searchLower) ||
+        user.memberId?.toLowerCase().includes(searchLower) ||
+        user.phone?.toLowerCase().includes(searchLower)
+      );
+    }
+    
+    // Remove password field
+    users = users.map(({ password, ...user }) => user);
+
+    const total = users.length;
     const skip = (page - 1) * limit;
-
-    const users = await User.find(query)
-      .select('-password')
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limit);
-
-    const total = await User.countDocuments(query);
+    const paginatedUsers = users.slice(skip, skip + limit);
 
     res.json({
       success: true,
-      data: users,
+      data: paginatedUsers,
       pagination: {
         page,
         limit,
@@ -292,7 +323,7 @@ router.get('/users', async (req, res) => {
 // @access  Admin only
 router.get('/users/:id', async (req, res) => {
   try {
-    const user = await User.findById(req.params.id).select('-password');
+    const user = await getDocumentById(COLLECTIONS.USERS, req.params.id);
 
     if (!user) {
       return res.status(404).json({
@@ -300,15 +331,22 @@ router.get('/users/:id', async (req, res) => {
         message: 'User not found',
       });
     }
+    
+    // Remove password
+    const { password, ...userWithoutPassword } = user;
 
     // Get user's family tree entries (read-only for admin)
-    const familyTreeEntries = await FamilyTree.find({ createdBy: user._id })
-      .sort({ createdAt: -1 });
+    const familyTreeEntries = await queryDocuments(
+      COLLECTIONS.FAMILY_TREE,
+      [{ field: 'createdBy', operator: '==', value: user.id }],
+      'createdAt',
+      'desc'
+    );
 
     res.json({
       success: true,
       data: {
-        user,
+        user: userWithoutPassword,
         familyTreeEntries,
         familyTreeCount: familyTreeEntries.length,
       },
@@ -330,7 +368,7 @@ router.put('/users/:id', async (req, res) => {
   try {
     const { name, email, phone, memberId, role } = req.body;
 
-    const user = await User.findById(req.params.id);
+    const user = await getDocumentById(COLLECTIONS.USERS, req.params.id);
 
     if (!user) {
       return res.status(404).json({
@@ -341,12 +379,15 @@ router.put('/users/:id', async (req, res) => {
 
     // Check if memberId is being changed and if it's already taken
     if (memberId && memberId !== user.memberId) {
-      const existingMemberId = await User.findOne({ 
-        memberId, 
-        _id: { $ne: user._id } 
-      });
+      const existingMemberId = await queryDocuments(
+        COLLECTIONS.USERS,
+        [{ field: 'memberId', operator: '==', value: memberId }],
+        null,
+        'asc',
+        1
+      );
       
-      if (existingMemberId) {
+      if (existingMemberId.length > 0 && existingMemberId[0].id !== user.id) {
         return res.status(400).json({
           success: false,
           message: 'Member ID already exists',
@@ -355,13 +396,16 @@ router.put('/users/:id', async (req, res) => {
     }
 
     // Check if email is being changed and if it's already taken
-    if (email && email !== user.email) {
-      const existingEmail = await User.findOne({ 
-        email: email.toLowerCase(), 
-        _id: { $ne: user._id } 
-      });
+    if (email && email.toLowerCase() !== user.email.toLowerCase()) {
+      const existingEmail = await queryDocuments(
+        COLLECTIONS.USERS,
+        [{ field: 'email', operator: '==', value: email.toLowerCase() }],
+        null,
+        'asc',
+        1
+      );
       
-      if (existingEmail) {
+      if (existingEmail.length > 0 && existingEmail[0].id !== user.id) {
         return res.status(400).json({
           success: false,
           message: 'Email already exists',
@@ -369,11 +413,12 @@ router.put('/users/:id', async (req, res) => {
       }
     }
 
-    // Update allowed fields
-    if (name !== undefined) user.name = name;
-    if (email !== undefined) user.email = email.toLowerCase();
-    if (phone !== undefined) user.phone = phone;
-    if (memberId !== undefined) user.memberId = memberId;
+    // Build update data
+    const updateData = {};
+    if (name !== undefined) updateData.name = name;
+    if (email !== undefined) updateData.email = email.toLowerCase();
+    if (phone !== undefined) updateData.phone = phone;
+    if (memberId !== undefined) updateData.memberId = memberId;
     
     // Role update validation
     if (role !== undefined) {
@@ -383,17 +428,16 @@ router.put('/users/:id', async (req, res) => {
           message: 'Invalid role. Must be "user" or "admin"',
         });
       }
-      user.role = role;
+      updateData.role = role;
     }
 
-    await user.save();
-
-    const updatedUser = await User.findById(user._id).select('-password');
+    const updatedUser = await updateDocument(COLLECTIONS.USERS, user.id, updateData);
+    const { password, ...userWithoutPassword } = updatedUser;
 
     res.json({
       success: true,
       message: 'User updated successfully',
-      data: updatedUser,
+      data: userWithoutPassword,
     });
   } catch (error) {
     console.error('Update user error:', error);
@@ -426,31 +470,11 @@ router.put('/users/:id/password', async (req, res) => {
       });
     }
 
-    const user = await User.findById(req.params.id);
-
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        message: 'User not found',
-      });
-    }
-
-    // Verify current password
-    const isMatch = await user.matchPassword(currentPassword);
-    if (!isMatch) {
-      return res.status(400).json({
-        success: false,
-        message: 'Current password is incorrect',
-      });
-    }
-
-    // Update password (will be hashed by pre-save hook)
-    user.password = newPassword;
-    await user.save();
-
-    res.json({
-      success: true,
-      message: 'Password updated successfully',
+    // Note: Password validation and hashing should be handled by auth service
+    // This is a placeholder - implement proper password handling with bcrypt
+    return res.status(501).json({
+      success: false,
+      message: 'Password update not implemented for Firestore yet. Use Firebase Auth.',
     });
   } catch (error) {
     console.error('Change password error:', error);
@@ -476,7 +500,7 @@ router.put('/users/:id/role', async (req, res) => {
       });
     }
 
-    const user = await User.findById(req.params.id);
+    const user = await getDocumentById(COLLECTIONS.USERS, req.params.id);
 
     if (!user) {
       return res.status(404).json({
@@ -486,22 +510,20 @@ router.put('/users/:id/role', async (req, res) => {
     }
 
     // Prevent admin from demoting themselves
-    if (user._id.toString() === req.user._id.toString() && role === 'user') {
+    if (user.id === req.user.id && role === 'user') {
       return res.status(400).json({
         success: false,
         message: 'You cannot demote yourself',
       });
     }
 
-    user.role = role;
-    await user.save();
-
-    const updatedUser = await User.findById(user._id).select('-password');
+    const updatedUser = await updateDocument(COLLECTIONS.USERS, user.id, { role });
+    const { password, ...userWithoutPassword } = updatedUser;
 
     res.json({
       success: true,
       message: `User ${role === 'admin' ? 'promoted to' : 'demoted to'} ${role}`,
-      data: updatedUser,
+      data: userWithoutPassword,
     });
   } catch (error) {
     console.error('Update role error:', error);
@@ -520,7 +542,7 @@ router.delete('/users/:id', async (req, res) => {
   try {
     const { deleteFamilyTree } = req.query; // Optional: delete family tree entries too
 
-    const user = await User.findById(req.params.id);
+    const user = await getDocumentById(COLLECTIONS.USERS, req.params.id);
 
     if (!user) {
       return res.status(404).json({
@@ -530,7 +552,7 @@ router.delete('/users/:id', async (req, res) => {
     }
 
     // Prevent admin from deleting themselves
-    if (user._id.toString() === req.user._id.toString()) {
+    if (user.id === req.user.id) {
       return res.status(400).json({
         success: false,
         message: 'You cannot delete your own account',
@@ -538,12 +560,21 @@ router.delete('/users/:id', async (req, res) => {
     }
 
     // Delete family tree entries if requested
+    let deletedCount = 0;
     if (deleteFamilyTree === 'true') {
-      const deleteResult = await FamilyTree.deleteMany({ createdBy: user._id });
-      console.log(`Deleted ${deleteResult.deletedCount} family tree entries for user ${user.email}`);
+      const familyTreeEntries = await queryDocuments(
+        COLLECTIONS.FAMILY_TREE,
+        [{ field: 'createdBy', operator: '==', value: user.id }]
+      );
+      
+      for (const entry of familyTreeEntries) {
+        await deleteDocument(COLLECTIONS.FAMILY_TREE, entry.id);
+        deletedCount++;
+      }
+      console.log(`Deleted ${deletedCount} family tree entries for user ${user.email}`);
     }
 
-    await User.findByIdAndDelete(user._id);
+    await deleteDocument(COLLECTIONS.USERS, user.id);
 
     res.json({
       success: true,
@@ -565,7 +596,7 @@ router.delete('/users/:id', async (req, res) => {
 // @access  Admin only
 router.get('/users/:id/family-tree', async (req, res) => {
   try {
-    const user = await User.findById(req.params.id).select('name email memberId');
+    const user = await getDocumentById(COLLECTIONS.USERS, req.params.id);
 
     if (!user) {
       return res.status(404).json({
@@ -574,13 +605,17 @@ router.get('/users/:id/family-tree', async (req, res) => {
       });
     }
 
-    const familyTreeEntries = await FamilyTree.find({ createdBy: user._id })
-      .sort({ createdAt: -1 });
+    const familyTreeEntries = await queryDocuments(
+      COLLECTIONS.FAMILY_TREE,
+      [{ field: 'createdBy', operator: '==', value: user.id }],
+      'createdAt',
+      'desc'
+    );
 
     res.json({
       success: true,
       data: {
-        user,
+        user: { id: user.id, name: user.name, email: user.email, memberId: user.memberId },
         entries: familyTreeEntries,
         count: familyTreeEntries.length,
       },
@@ -611,6 +646,10 @@ router.get('/stats/overview', async (req, res) => {
     startOfWeek.setDate(now.getDate() - 7);
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
 
+    const todayTimestamp = admin.firestore.Timestamp.fromDate(startOfToday);
+    const weekTimestamp = admin.firestore.Timestamp.fromDate(startOfWeek);
+    const monthTimestamp = admin.firestore.Timestamp.fromDate(startOfMonth);
+
     const [
       totalUsers,
       todayUsers,
@@ -622,15 +661,15 @@ router.get('/stats/overview', async (req, res) => {
       eventCount,
       placeCount,
     ] = await Promise.all([
-      User.countDocuments(),
-      User.countDocuments({ createdAt: { $gte: startOfToday } }),
-      User.countDocuments({ createdAt: { $gte: startOfWeek } }),
-      User.countDocuments({ createdAt: { $gte: startOfMonth } }),
-      CommitteeMember.countDocuments(),
-      Sponsor.countDocuments(),
-      SpecialOffer.countDocuments(),
-      UpcomingEvent.countDocuments(),
-      SpiritualPlace.countDocuments(),
+      countDocuments(COLLECTIONS.USERS),
+      countDocuments(COLLECTIONS.USERS, [{ field: 'createdAt', operator: '>=', value: todayTimestamp }]),
+      countDocuments(COLLECTIONS.USERS, [{ field: 'createdAt', operator: '>=', value: weekTimestamp }]),
+      countDocuments(COLLECTIONS.USERS, [{ field: 'createdAt', operator: '>=', value: monthTimestamp }]),
+      countDocuments(COLLECTIONS.COMMITTEE_MEMBERS),
+      countDocuments(COLLECTIONS.SPONSORS),
+      countDocuments(COLLECTIONS.SPECIAL_OFFERS),
+      countDocuments(COLLECTIONS.UPCOMING_EVENTS),
+      countDocuments(COLLECTIONS.SPIRITUAL_PLACES),
     ]);
 
     res.json({
@@ -672,39 +711,50 @@ router.get('/pending-users', async (req, res) => {
   try {
     const { page = 1, limit = 20, search = '' } = req.query;
     
-    const query = { accountStatus: 'pending' };
+    // Get pending users
+    let pendingUsers = await queryDocuments(
+      COLLECTIONS.USERS,
+      [{ field: 'accountStatus', operator: '==', value: 'pending' }],
+      'createdAt',
+      'desc'
+    );
+    
+    // Remove passwords
+    pendingUsers = pendingUsers.map(({ password, ...user }) => user);
     
     // Add search if provided
     if (search) {
-      query.$or = [
-        { name: { $regex: search, $options: 'i' } },
-        { email: { $regex: search, $options: 'i' } },
-        { memberId: { $regex: search, $options: 'i' } },
-        { phone: { $regex: search, $options: 'i' } },
-      ];
+      const searchLower = search.toLowerCase();
+      pendingUsers = pendingUsers.filter(user =>
+        user.name?.toLowerCase().includes(searchLower) ||
+        user.email?.toLowerCase().includes(searchLower) ||
+        user.memberId?.toLowerCase().includes(searchLower) ||
+        user.phone?.toLowerCase().includes(searchLower)
+      );
     }
     
-    const pendingUsers = await User.find(query)
-      .select('-password')
-      .sort({ createdAt: -1 })
-      .limit(limit * 1)
-      .skip((page - 1) * limit);
-    
-    const total = await User.countDocuments(query);
+    const total = pendingUsers.length;
+    const skip = (page - 1) * limit;
+    const paginatedUsers = pendingUsers.slice(skip, parseInt(skip) + parseInt(limit));
     
     // For each pending user, check if their member ID exists in authorized list
     const usersWithDetails = await Promise.all(
-      pendingUsers.map(async (user) => {
-        const authorizedMember = await AuthorizedMember.findOne({ 
-          memberId: user.memberId 
-        });
+      paginatedUsers.map(async (user) => {
+        const authorizedMember = await queryDocuments(
+          COLLECTIONS.AUTHORIZED_MEMBERS,
+          [{ field: 'memberId', operator: '==', value: user.memberId }],
+          null,
+          'asc',
+          1
+        );
         
         let matchStatus = 'not_found';
         let matchDetails = {};
         
-        if (authorizedMember) {
+        if (authorizedMember.length > 0) {
+          const authMember = authorizedMember[0];
           const userPhone = user.phone?.replace(/[\s\-\(\)]/g, '').trim() || '';
-          const authPhone = authorizedMember.phoneNumber?.replace(/[\s\-\(\)]/g, '').trim() || '';
+          const authPhone = authMember.phoneNumber?.replace(/[\s\-\(\)]/g, '').trim() || '';
           
           if (userPhone === authPhone) {
             matchStatus = 'exact_match';
@@ -713,14 +763,14 @@ router.get('/pending-users', async (req, res) => {
           }
           
           matchDetails = {
-            authorizedPhone: authorizedMember.phoneNumber,
+            authorizedPhone: authMember.phoneNumber,
             userPhone: user.phone,
-            authorizedName: authorizedMember.name,
+            authorizedName: authMember.name,
           };
         }
         
         return {
-          ...user.toObject(),
+          ...user,
           matchStatus,
           matchDetails,
         };
@@ -752,7 +802,10 @@ router.get('/pending-users', async (req, res) => {
 // @access  Admin only
 router.get('/pending-users/count', async (req, res) => {
   try {
-    const count = await User.countDocuments({ accountStatus: 'pending' });
+    const count = await countDocuments(
+      COLLECTIONS.USERS,
+      [{ field: 'accountStatus', operator: '==', value: 'pending' }]
+    );
     
     res.json({
       success: true,
@@ -773,7 +826,7 @@ router.get('/pending-users/count', async (req, res) => {
 // @access  Admin only
 router.post('/pending-users/:id/approve', async (req, res) => {
   try {
-    const user = await User.findById(req.params.id);
+    const user = await getDocumentById(COLLECTIONS.USERS, req.params.id);
     
     if (!user) {
       return res.status(404).json({
@@ -790,13 +843,15 @@ router.post('/pending-users/:id/approve', async (req, res) => {
     }
     
     // Update user status
-    user.accountStatus = 'approved';
-    user.verificationStatus = 'verified';
-    user.requiresAdminApproval = false;
-    user.reviewedBy = req.user._id;
-    user.reviewedAt = new Date();
+    const updateData = {
+      accountStatus: 'approved',
+      verificationStatus: 'verified',
+      requiresAdminApproval: false,
+      reviewedBy: req.user.id,
+      reviewedAt: admin.firestore.Timestamp.now(),
+    };
     
-    await user.save();
+    const updatedUser = await updateDocument(COLLECTIONS.USERS, user.id, updateData);
     
     console.log(`✅ Admin ${req.user.email} approved user ${user.email}`);
     
@@ -808,10 +863,10 @@ router.post('/pending-users/:id/approve', async (req, res) => {
       success: true,
       message: 'User approved successfully',
       data: {
-        id: user._id,
-        name: user.name,
-        email: user.email,
-        accountStatus: user.accountStatus,
+        id: updatedUser.id,
+        name: updatedUser.name,
+        email: updatedUser.email,
+        accountStatus: updatedUser.accountStatus,
       },
       notification: {
         placeholder: 'User notification will be implemented in production',
@@ -835,7 +890,7 @@ router.post('/pending-users/:id/reject', async (req, res) => {
   try {
     const { reason } = req.body;
     
-    const user = await User.findById(req.params.id);
+    const user = await getDocumentById(COLLECTIONS.USERS, req.params.id);
     
     if (!user) {
       return res.status(404).json({
@@ -852,14 +907,16 @@ router.post('/pending-users/:id/reject', async (req, res) => {
     }
     
     // Update user status
-    user.accountStatus = 'rejected';
-    user.verificationStatus = 'unverified';
-    user.requiresAdminApproval = false;
-    user.reviewedBy = req.user._id;
-    user.reviewedAt = new Date();
-    user.rejectionReason = reason || 'No reason provided';
+    const updateData = {
+      accountStatus: 'rejected',
+      verificationStatus: 'unverified',
+      requiresAdminApproval: false,
+      reviewedBy: req.user.id,
+      reviewedAt: admin.firestore.Timestamp.now(),
+      rejectionReason: reason || 'No reason provided',
+    };
     
-    await user.save();
+    const updatedUser = await updateDocument(COLLECTIONS.USERS, user.id, updateData);
     
     console.log(`❌ Admin ${req.user.email} rejected user ${user.email}`);
     
@@ -871,11 +928,11 @@ router.post('/pending-users/:id/reject', async (req, res) => {
       success: true,
       message: 'User rejected successfully',
       data: {
-        id: user._id,
-        name: user.name,
-        email: user.email,
-        accountStatus: user.accountStatus,
-        rejectionReason: user.rejectionReason,
+        id: updatedUser.id,
+        name: updatedUser.name,
+        email: updatedUser.email,
+        accountStatus: updatedUser.accountStatus,
+        rejectionReason: updatedUser.rejectionReason,
       },
       notification: {
         placeholder: 'User notification will be implemented in production',
@@ -899,38 +956,63 @@ router.get('/authorized-members', async (req, res) => {
   try {
     const { page = 1, limit = 50, search = '', status = 'all' } = req.query;
     
-    const query = {};
+    // Build conditions
+    let conditions = [];
     
     // Filter by usage status
     if (status === 'used') {
-      query.isUsed = true;
+      conditions.push({ field: 'isUsed', operator: '==', value: true });
     } else if (status === 'unused') {
-      query.isUsed = false;
+      conditions.push({ field: 'isUsed', operator: '==', value: false });
     }
     
-    // Add search if provided
+    // Get members
+    let members = await queryDocuments(
+      COLLECTIONS.AUTHORIZED_MEMBERS,
+      conditions,
+      'importedAt',
+      'desc'
+    );
+    
+    // Apply search filter in memory
     if (search) {
-      query.$or = [
-        { memberId: { $regex: search, $options: 'i' } },
-        { phoneNumber: { $regex: search, $options: 'i' } },
-        { name: { $regex: search, $options: 'i' } },
-        { email: { $regex: search, $options: 'i' } },
-      ];
+      const searchLower = search.toLowerCase();
+      members = members.filter(member =>
+        member.memberId?.toLowerCase().includes(searchLower) ||
+        member.phoneNumber?.toLowerCase().includes(searchLower) ||
+        member.name?.toLowerCase().includes(searchLower) ||
+        member.email?.toLowerCase().includes(searchLower)
+      );
     }
     
-    const members = await AuthorizedMember.find(query)
-      .populate('usedBy', 'name email')
-      .sort({ importedAt: -1 })
-      .limit(limit * 1)
-      .skip((page - 1) * limit);
+    // Get user details for usedBy field
+    const membersWithUsers = await Promise.all(
+      members.map(async (member) => {
+        if (member.usedBy) {
+          const user = await getDocumentById(COLLECTIONS.USERS, member.usedBy);
+          return {
+            ...member,
+            usedByUser: user ? { id: user.id, name: user.name, email: user.email } : null,
+          };
+        }
+        return member;
+      })
+    );
     
-    const total = await AuthorizedMember.countDocuments(query);
-    const usedCount = await AuthorizedMember.countDocuments({ isUsed: true });
-    const unusedCount = await AuthorizedMember.countDocuments({ isUsed: false });
+    const total = membersWithUsers.length;
+    const skip = (page - 1) * limit;
+    const paginatedMembers = membersWithUsers.slice(skip, parseInt(skip) + parseInt(limit));
+    
+    const usedCount = await countDocuments(COLLECTIONS.AUTHORIZED_MEMBERS, [
+      { field: 'isUsed', operator: '==', value: true }
+    ]);
+    const unusedCount = await countDocuments(COLLECTIONS.AUTHORIZED_MEMBERS, [
+      { field: 'isUsed', operator: '==', value: false }
+    ]);
     
     res.json({
       success: true,
-      data: members,
+      data: paginatedMembers,
       pagination: {
         total,
         page: parseInt(page),
