@@ -53,7 +53,6 @@ async function importData() {
     const firstSheetName = workbook.SheetNames[0];
     const sheet = workbook.Sheets[firstSheetName];
 
-    // defval:null keeps rows even when cells are missing
     const rows = xlsx.utils.sheet_to_json(sheet, { defval: null });
 
     const docs = rows.map((row) => {
