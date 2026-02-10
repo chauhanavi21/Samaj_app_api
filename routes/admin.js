@@ -336,12 +336,26 @@ router.get('/users/:id', async (req, res) => {
     const { password, ...userWithoutPassword } = user;
 
     // Get user's family tree entries (read-only for admin)
+    // Avoid Firestore composite-index requirement (createdBy equality + createdAt orderBy)
     const familyTreeEntries = await queryDocuments(
       COLLECTIONS.FAMILY_TREE,
-      [{ field: 'createdBy', operator: '==', value: user.id }],
-      'createdAt',
-      'desc'
+      [{ field: 'createdBy', operator: '==', value: user.id }]
     );
+
+    const toMillis = (ts) => {
+      if (!ts) return 0;
+      if (typeof ts === 'number') return ts;
+      if (typeof ts === 'string') {
+        const parsed = Date.parse(ts);
+        return Number.isFinite(parsed) ? parsed : 0;
+      }
+      if (typeof ts.toMillis === 'function') return ts.toMillis();
+      if (typeof ts.toDate === 'function') return ts.toDate().getTime();
+      if (typeof ts._seconds === 'number') return ts._seconds * 1000;
+      return 0;
+    };
+
+    familyTreeEntries.sort((a, b) => toMillis(b.createdAt) - toMillis(a.createdAt));
 
     res.json({
       success: true,
@@ -605,12 +619,26 @@ router.get('/users/:id/family-tree', async (req, res) => {
       });
     }
 
+    // Avoid Firestore composite-index requirement (createdBy equality + createdAt orderBy)
     const familyTreeEntries = await queryDocuments(
       COLLECTIONS.FAMILY_TREE,
-      [{ field: 'createdBy', operator: '==', value: user.id }],
-      'createdAt',
-      'desc'
+      [{ field: 'createdBy', operator: '==', value: user.id }]
     );
+
+    const toMillis = (ts) => {
+      if (!ts) return 0;
+      if (typeof ts === 'number') return ts;
+      if (typeof ts === 'string') {
+        const parsed = Date.parse(ts);
+        return Number.isFinite(parsed) ? parsed : 0;
+      }
+      if (typeof ts.toMillis === 'function') return ts.toMillis();
+      if (typeof ts.toDate === 'function') return ts.toDate().getTime();
+      if (typeof ts._seconds === 'number') return ts._seconds * 1000;
+      return 0;
+    };
+
+    familyTreeEntries.sort((a, b) => toMillis(b.createdAt) - toMillis(a.createdAt));
 
     res.json({
       success: true,

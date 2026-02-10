@@ -23,22 +23,37 @@ router.get('/search', protect, async (req, res) => {
       return res.json({ success: true, data: [] });
     }
 
+    const normalize = (value) => {
+      const s = String(value || '');
+      return s
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-zA-Z0-9\s]/g, ' ')
+        .toLowerCase()
+        .replace(/\s+/g, ' ')
+        .trim();
+    };
+
+    const normalizedQuery = normalize(raw);
+    if (!normalizedQuery) {
+      return res.json({ success: true, data: [] });
+    }
+
     // Get all information documents
     const allInfo = await getAllDocuments(COLLECTIONS.INFORMATION);
     
     // Token-based flexible search
-    const tokens = raw.toLowerCase().split(/\s+/).filter(Boolean);
+    const tokens = normalizedQuery.split(/\s+/).filter(Boolean);
     
     // Filter results based on tokens
     const results = allInfo.filter(doc => {
-      const firstName = (doc.firstName || '').toLowerCase();
-      const middleName = (doc.middleName || '').toLowerCase();
-      const lastName = (doc.lastName || '').toLowerCase();
-      const fullName = (doc.fullName || '').toLowerCase();
-      const searchLower = raw.toLowerCase();
+      const firstName = normalize(doc.firstName);
+      const middleName = normalize(doc.middleName);
+      const lastName = normalize(doc.lastName);
+      const fullName = normalize(doc.fullName);
       
       // Check if full name matches
-      if (fullName.includes(searchLower)) return true;
+      if (fullName.includes(normalizedQuery)) return true;
       
       // Check if all tokens match somewhere in name fields
       const allTokensMatch = tokens.every(token =>

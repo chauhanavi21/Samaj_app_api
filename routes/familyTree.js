@@ -86,12 +86,28 @@ router.post('/', async (req, res) => {
 // @access  Private
 router.get('/', async (req, res) => {
   try {
+    // Firestore requires a composite index for (where createdBy == X) + orderBy(createdAt).
+    // To keep this endpoint working without manual index creation, fetch by createdBy only
+    // and sort in memory.
     const familyTrees = await queryDocuments(
       COLLECTIONS.FAMILY_TREE,
-      [{ field: 'createdBy', operator: '==', value: req.user.id }],
-      'createdAt',
-      'desc'
+      [{ field: 'createdBy', operator: '==', value: req.user.id }]
     );
+
+    const toMillis = (ts) => {
+      if (!ts) return 0;
+      if (typeof ts === 'number') return ts;
+      if (typeof ts === 'string') {
+        const parsed = Date.parse(ts);
+        return Number.isFinite(parsed) ? parsed : 0;
+      }
+      if (typeof ts.toMillis === 'function') return ts.toMillis();
+      if (typeof ts.toDate === 'function') return ts.toDate().getTime();
+      if (typeof ts._seconds === 'number') return ts._seconds * 1000;
+      return 0;
+    };
+
+    familyTrees.sort((a, b) => toMillis(b.createdAt) - toMillis(a.createdAt));
 
     res.json({
       success: true,
