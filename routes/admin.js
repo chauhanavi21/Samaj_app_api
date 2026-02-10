@@ -549,6 +549,84 @@ router.get('/users/:id', async (req, res) => {
   }
 });
 
+// @route   DELETE /api/admin/users/:id
+// @desc    Delete a user and release any authorized-member lock
+// @access  Admin only
+router.delete('/users/:id', async (req, res) => {
+  try {
+    const userId = req.params.id;
+    const user = await getDocumentById(COLLECTIONS.USERS, userId);
+
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    // Release authorizedMembers entries that were used by this user
+    try {
+      const usedEntries = await queryDocuments(COLLECTIONS.AUTHORIZED_MEMBERS, [
+        { field: 'usedBy', operator: '==', value: userId },
+      ]);
+
+      for (const entry of usedEntries) {
+        await updateDocument(COLLECTIONS.AUTHORIZED_MEMBERS, entry.id, {
+          isUsed: false,
+          usedBy: null,
+          usedAt: null,
+        });
+      }
+
+      // Fallback: docId might be memberId
+      if (user.memberId) {
+        const byDocId = await getDocumentById(COLLECTIONS.AUTHORIZED_MEMBERS, String(user.memberId));
+        if (byDocId?.isUsed === true && byDocId.usedBy === userId) {
+          await updateDocument(COLLECTIONS.AUTHORIZED_MEMBERS, byDocId.id, {
+            isUsed: false,
+            usedBy: null,
+            usedAt: null,
+          });
+        }
+      }
+    } catch (e) {
+      console.error('Failed to release authorizedMembers lock:', e.message);
+    }
+
+    // Delete user's family tree entries
+    try {
+      const entries = await queryDocuments(COLLECTIONS.FAMILY_TREE, [
+        { field: 'createdBy', operator: '==', value: userId },
+      ]);
+      for (const entry of entries) {
+        await deleteDocument(COLLECTIONS.FAMILY_TREE, entry.id);
+      }
+    } catch (e) {
+      console.error('Failed to delete family tree entries:', e.message);
+    }
+
+    // Delete user doc
+    await deleteDocument(COLLECTIONS.USERS, userId);
+
+    // Best-effort: delete Firebase Auth user (if present)
+    try {
+      await admin.auth().deleteUser(userId);
+    } catch (e) {
+      // Non-fatal; user may not exist in Firebase Auth.
+      console.log('Firebase Auth delete skipped:', e.message);
+    }
+
+    res.json({
+      success: true,
+      message: 'User deleted successfully',
+    });
+  } catch (error) {
+    console.error('Delete user error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete user',
+      error: error.message,
+    });
+  }
+});
+
 // @route   PUT /api/admin/users/:id
 // @desc    Update user details
 // @access  Admin only

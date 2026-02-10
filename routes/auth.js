@@ -211,20 +211,58 @@ router.post('/signup', async (req, res) => {
           const phoneMatches = !!authorizedPhone && normalizedPhone === authorizedPhone;
 
           // If this authorized entry is already used and the user is trying to reuse the same
-          // member/phone, block signup (do not create a pending duplicate account).
+          // member/phone, block signup (do not create a pending duplicate account) *only if*
+          // the referenced user still exists. If the user doc was deleted, treat this as a stale lock.
           if (memberIdMatches || phoneMatches) {
-            console.log('❌ Authorized member already used - blocking signup');
-            return res.status(400).json({
-              success: false,
-              message: 'This Member ID / phone number is already registered. Please login or contact admin.',
-            });
-          }
+            let usedByUser = null;
+            if (authorizedMember.usedBy) {
+              usedByUser = await getDocumentById(COLLECTIONS.USERS, authorizedMember.usedBy);
+            }
 
-          // Otherwise fall back to pending approval
-          requiresAdminApproval = true;
-          accountStatus = 'pending';
-          verificationStatus = 'pending_admin';
-          console.log('⚠️  Authorized member already used - requires admin approval');
+            if (usedByUser) {
+              console.log('❌ Authorized member already used - blocking signup');
+              return res.status(400).json({
+                success: false,
+                message: 'This Member ID / phone number is already registered. Please login or contact admin.',
+              });
+            }
+
+            console.log('♻️  Authorized member marked used but user is missing - resetting stale lock');
+            try {
+              await updateDocument(COLLECTIONS.AUTHORIZED_MEMBERS, authorizedMember.id, {
+                isUsed: false,
+                usedBy: null,
+                usedAt: null,
+              });
+              authorizedMember.isUsed = false;
+              authorizedMember.usedBy = null;
+              authorizedMember.usedAt = null;
+            } catch (resetError) {
+              console.error('⚠️  Failed to reset stale authorized lock:', resetError.message);
+            }
+
+            // Now evaluate the match normally (auto-approve only when BOTH match)
+            if (memberIdMatches && phoneMatches) {
+              isVerified = true;
+              console.log('✅ Member verified - perfect match (memberId + phone)');
+            } else {
+              requiresAdminApproval = true;
+              accountStatus = 'pending';
+              verificationStatus = 'pending_admin';
+              console.log('⚠️  Mismatch with authorized record - requires admin approval', {
+                provided: { memberId: normalizedMemberId, phone: normalizedPhone },
+                authorized: { memberId: authorizedMemberId, phone: authorizedPhone },
+              });
+            }
+
+            // Stop here (we already set isVerified/pending)
+          } else {
+            // Otherwise fall back to pending approval
+            requiresAdminApproval = true;
+            accountStatus = 'pending';
+            verificationStatus = 'pending_admin';
+            console.log('⚠️  Authorized member already used - requires admin approval');
+          }
         } else if (authorizedMember) {
           const authorizedPhone = normalizePhone(authorizedMember.phoneNumber);
           const authorizedMemberId = normalizeMemberId(authorizedMember.memberId || authorizedMember.id);
