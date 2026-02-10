@@ -80,37 +80,60 @@ router.post('/signup', async (req, res) => {
       });
     }
 
-    // Check if memberId is already taken
-    const existingMemberId = await findOneDocument(COLLECTIONS.USERS, [
-      { field: 'memberId', operator: '==', value: normalizedMemberId }
-    ]);
-    
-    if (existingMemberId) {
-      console.log('❌ Member ID already exists:', normalizedMemberId);
-      return res.status(400).json({
-        success: false,
-        message: 'Member ID already exists. Please use a different Member ID.',
-      });
-    }
+    const isReapplicable = (user) =>
+      user && (user.accountStatus === 'pending' || user.accountStatus === 'rejected');
 
-    // Check if user already exists by email
-    const userExists = await findOneDocument(COLLECTIONS.USERS, [
-      { field: 'email', operator: '==', value: normalizedEmail }
+    // Existing user checks
+    const existingByMemberId = await findOneDocument(COLLECTIONS.USERS, [
+      { field: 'memberId', operator: '==', value: normalizedMemberId },
+    ]);
+    const existingByEmail = await findOneDocument(COLLECTIONS.USERS, [
+      { field: 'email', operator: '==', value: normalizedEmail },
     ]);
 
-    if (userExists) {
-      console.log('❌ User already exists:', {
-        email: userExists.email,
-        name: userExists.name,
-        role: userExists.role,
-      });
-      return res.status(400).json({
-        success: false,
-        message: 'User already exists with this email',
-      });
+    // Re-apply flow:
+    // If an account exists with the same memberId/email but is pending/rejected,
+    // allow signup again by updating that same user record.
+    let reapplyUser = null;
+
+    if (existingByMemberId) {
+      if (existingByMemberId.email === normalizedEmail && isReapplicable(existingByMemberId)) {
+        reapplyUser = existingByMemberId;
+        console.log('♻️  Re-apply detected by memberId for user:', reapplyUser.id);
+      } else {
+        console.log('❌ Member ID already exists:', normalizedMemberId);
+        return res.status(400).json({
+          success: false,
+          message: 'Member ID already exists. Please use a different Member ID.',
+        });
+      }
     }
 
-    console.log('✅ Email is available, proceeding with verification...');
+    if (existingByEmail) {
+      if (!reapplyUser) {
+        if (existingByEmail.memberId === normalizedMemberId && isReapplicable(existingByEmail)) {
+          reapplyUser = existingByEmail;
+          console.log('♻️  Re-apply detected by email for user:', reapplyUser.id);
+        } else {
+          console.log('❌ User already exists:', {
+            email: existingByEmail.email,
+            name: existingByEmail.name,
+            role: existingByEmail.role,
+          });
+          return res.status(400).json({
+            success: false,
+            message: 'User already exists with this email',
+          });
+        }
+      } else if (existingByEmail.id !== reapplyUser.id) {
+        return res.status(400).json({
+          success: false,
+          message: 'Email / Member ID conflict. Please contact admin.',
+        });
+      }
+    }
+
+    console.log('✅ Proceeding with verification...');
 
     // VERIFICATION: Check if member ID and phone number match authorized list
     let isVerified = false;
@@ -299,7 +322,7 @@ router.post('/signup', async (req, res) => {
     // Hash password
     const hashedPassword = await hashPassword(password);
 
-    // Create user in Firestore
+    // Create or update user in Firestore
     const userData = {
       name,
       email: normalizedEmail,
@@ -310,36 +333,66 @@ router.post('/signup', async (req, res) => {
       accountStatus,
       verificationStatus,
       requiresAdminApproval,
-      notificationPreferences: {
+      notificationPreferences: reapplyUser?.notificationPreferences || {
         email: true,
         sms: false,
       },
     };
 
-    const newUser = await createDocument(COLLECTIONS.USERS, userData);
-
-    console.log('✅ User created in Firestore:', newUser.id);
-
-    // Auto-create a family tree entry on account creation
-    try {
-      await createDocument(COLLECTIONS.FAMILY_TREE, {
-        createdBy: newUser.id,
-        memberId: normalizedMemberId,
-        personName: name,
-        personPhone: phone || '',
-        personDateOfBirth: null,
-        personOccupation: '',
-        spouseName: '',
-        spousePhone: '',
-        fatherName: '',
-        fatherPhone: '',
-        motherName: '',
-        motherPhone: '',
-        children: [],
-        address: '',
-        notes: '',
+    let savedUser;
+    if (reapplyUser) {
+      savedUser = await updateDocument(COLLECTIONS.USERS, reapplyUser.id, {
+        ...userData,
+        rejectionReason: '',
+        rejectedAt: null,
+        rejectedBy: null,
+        approvedAt: null,
+        approvedBy: null,
+        reappliedAt: new Date(),
       });
-      console.log('✅ Family tree entry auto-created for user:', newUser.id);
+      console.log('✅ User updated (re-apply) in Firestore:', savedUser.id);
+    } else {
+      savedUser = await createDocument(COLLECTIONS.USERS, userData);
+      console.log('✅ User created in Firestore:', savedUser.id);
+    }
+
+    // Auto-create/update a family tree entry on account creation
+    try {
+      const existingEntries = await queryDocuments(
+        COLLECTIONS.FAMILY_TREE,
+        [{ field: 'createdBy', operator: '==', value: savedUser.id }],
+        null,
+        'asc',
+        1
+      );
+
+      if (existingEntries.length > 0) {
+        await updateDocument(COLLECTIONS.FAMILY_TREE, existingEntries[0].id, {
+          memberId: normalizedMemberId,
+          personName: name,
+          personPhone: phone || '',
+        });
+        console.log('✅ Family tree entry updated for user:', savedUser.id);
+      } else {
+        await createDocument(COLLECTIONS.FAMILY_TREE, {
+          createdBy: savedUser.id,
+          memberId: normalizedMemberId,
+          personName: name,
+          personPhone: phone || '',
+          personDateOfBirth: null,
+          personOccupation: '',
+          spouseName: '',
+          spousePhone: '',
+          fatherName: '',
+          fatherPhone: '',
+          motherName: '',
+          motherPhone: '',
+          children: [],
+          address: '',
+          notes: '',
+        });
+        console.log('✅ Family tree entry auto-created for user:', savedUser.id);
+      }
     } catch (familyTreeError) {
       console.error('⚠️  Failed to auto-create family tree entry:', familyTreeError.message);
     }
@@ -348,7 +401,7 @@ router.post('/signup', async (req, res) => {
     if (isVerified && authorizedMember) {
       await updateDocument(COLLECTIONS.AUTHORIZED_MEMBERS, authorizedMember.id, {
         isUsed: true,
-        usedBy: newUser.id,
+        usedBy: savedUser.id,
         usedAt: new Date(),
       });
       console.log('✅ Authorized member marked as used');
@@ -369,7 +422,7 @@ router.post('/signup', async (req, res) => {
     }
 
     // Generate token only for approved users
-    const token = requiresAdminApproval ? null : generateToken(newUser.id);
+    const token = requiresAdminApproval ? null : generateToken(savedUser.id);
 
     console.log('✅ Signup successful');
 
@@ -380,14 +433,14 @@ router.post('/signup', async (req, res) => {
         : 'Account created successfully!',
       token,
       user: {
-        id: newUser.id,
-        name: newUser.name,
-        email: newUser.email,
-        role: newUser.role,
-        memberId: newUser.memberId,
-        accountStatus: newUser.accountStatus,
-        verificationStatus: newUser.verificationStatus,
-        requiresAdminApproval: newUser.requiresAdminApproval,
+        id: savedUser.id,
+        name: savedUser.name,
+        email: savedUser.email,
+        role: savedUser.role,
+        memberId: savedUser.memberId,
+        accountStatus: savedUser.accountStatus,
+        verificationStatus: savedUser.verificationStatus,
+        requiresAdminApproval: savedUser.requiresAdminApproval,
       },
     });
 
