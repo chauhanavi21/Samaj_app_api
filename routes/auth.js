@@ -98,6 +98,16 @@ router.post('/signup', async (req, res) => {
       return digits.length > 10 ? digits.slice(-10) : digits;
     };
 
+    const normalizeMemberId = (value) => String(value ?? '').trim();
+
+    const maybeNumber = (value) => {
+      const str = String(value ?? '').trim();
+      if (!str) return null;
+      if (!/^\d+$/.test(str)) return null;
+      const n = Number(str);
+      return Number.isFinite(n) ? n : null;
+    };
+
     try {
       const normalizedPhone = normalizePhone(phone);
       
@@ -112,26 +122,40 @@ router.post('/signup', async (req, res) => {
         verificationStatus = 'pending_admin';
         console.log('⚠️  Phone not provided - requires admin approval');
       } else {
-        // Look up authorized record by memberId (primary)
+        // Look up authorized record by memberId (primary) - tolerate string vs number storage
+        const memberIdNumber = maybeNumber(normalizedMemberId);
+        const memberIdCandidates = memberIdNumber === null ? [normalizedMemberId] : [normalizedMemberId, memberIdNumber];
+
         authorizedMember = await findOneDocument(COLLECTIONS.AUTHORIZED_MEMBERS, [
-          { field: 'memberId', operator: '==', value: normalizedMemberId }
+          {
+            field: 'memberId',
+            operator: memberIdCandidates.length > 1 ? 'in' : '==',
+            value: memberIdCandidates.length > 1 ? memberIdCandidates : memberIdCandidates[0],
+          },
         ]);
 
         // If not found by memberId, try by phone (fallback)
         if (!authorizedMember) {
+          const phoneNumberValue = maybeNumber(normalizedPhone);
+          const phoneCandidates = phoneNumberValue === null ? [normalizedPhone] : [normalizedPhone, phoneNumberValue];
+
           authorizedMember = await findOneDocument(COLLECTIONS.AUTHORIZED_MEMBERS, [
-            { field: 'phoneNumber', operator: '==', value: normalizedPhone }
+            {
+              field: 'phoneNumber',
+              operator: phoneCandidates.length > 1 ? 'in' : '==',
+              value: phoneCandidates.length > 1 ? phoneCandidates : phoneCandidates[0],
+            },
           ]);
         }
 
-        if (authorizedMember?.isUsed) {
+        if (authorizedMember?.isUsed === true) {
           requiresAdminApproval = true;
           accountStatus = 'pending';
           verificationStatus = 'pending_admin';
           console.log('⚠️  Authorized member already used - requires admin approval');
         } else if (authorizedMember) {
           const authorizedPhone = normalizePhone(authorizedMember.phoneNumber);
-          const authorizedMemberId = String(authorizedMember.memberId || '').trim();
+          const authorizedMemberId = normalizeMemberId(authorizedMember.memberId);
 
           const memberIdMatches = !!authorizedMemberId && normalizedMemberId === authorizedMemberId;
           const phoneMatches = !!authorizedPhone && normalizedPhone === authorizedPhone;
@@ -143,7 +167,10 @@ router.post('/signup', async (req, res) => {
             requiresAdminApproval = true;
             accountStatus = 'pending';
             verificationStatus = 'pending_admin';
-            console.log('⚠️  Mismatch with authorized record - requires admin approval');
+            console.log('⚠️  Mismatch with authorized record - requires admin approval', {
+              provided: { memberId: normalizedMemberId, phone: normalizedPhone },
+              authorized: { memberId: authorizedMemberId, phone: authorizedPhone },
+            });
           }
         } else {
           requiresAdminApproval = true;
@@ -219,7 +246,7 @@ router.post('/signup', async (req, res) => {
 
     // Send welcome email
     try {
-      await sendWelcomeEmail(normalizedEmail, name);
+      await sendWelcomeEmail(normalizedEmail, name, normalizedMemberId);
       console.log('✅ Welcome email sent');
     } catch (emailError) {
       console.error('⚠️  Failed to send welcome email:', emailError.message);

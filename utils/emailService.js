@@ -62,7 +62,7 @@ const createTransporter = () => {
   
   // Check if using SendGrid
   if (process.env.SENDGRID_API_KEY) {
-    return nodemailer.createTransporter({
+    return nodemailer.createTransport({
       host: 'smtp.sendgrid.net',
       port: 587,
       secure: false,
@@ -98,7 +98,7 @@ const createTransporter = () => {
   }
   
   // Fallback: generic SMTP
-  return nodemailer.createTransporter({
+  return nodemailer.createTransport({
     host: process.env.SMTP_HOST,
     port: process.env.SMTP_PORT || 587,
     secure: process.env.SMTP_SECURE === 'true',
@@ -107,6 +107,67 @@ const createTransporter = () => {
       pass: process.env.SMTP_PASS,
     },
   });
+};
+
+/**
+ * Send account approved email
+ */
+const sendAccountApprovedEmail = async (email, userName) => {
+  try {
+    const transporter = createTransporter();
+    const mailOptions = {
+      from: `"${process.env.EMAIL_FROM_NAME || 'Thali Yuva Sangh'}" <${process.env.EMAIL_FROM || 'noreply@thaliyuvasangh.org'}>`,
+      to: email,
+      subject: 'Your account has been approved - Thali Yuva Sangh',
+      html: `
+        <div style="font-family:Arial,sans-serif;line-height:1.6;color:#333">
+          <h2 style="color:#1A3A69">Account Approved</h2>
+          <p>Hello ${userName || ''},</p>
+          <p>Your account has been approved by our admin team. You can now sign in to the app.</p>
+          <p style="margin-top:24px;font-size:12px;color:#666">Thali Yuva Sangh</p>
+        </div>
+      `,
+      text: `Hello ${userName || ''},\n\nYour account has been approved by our admin team. You can now sign in to the app.\n\nThali Yuva Sangh`,
+    };
+
+    const info = await transporter.sendMail(mailOptions);
+    console.log('✅ Account approved email sent:', info.messageId);
+    return { success: true, messageId: info.messageId };
+  } catch (error) {
+    console.error('❌ Error sending approval email:', error);
+    throw error;
+  }
+};
+
+/**
+ * Send account rejected email
+ */
+const sendAccountRejectedEmail = async (email, userName, reason) => {
+  try {
+    const transporter = createTransporter();
+    const mailOptions = {
+      from: `"${process.env.EMAIL_FROM_NAME || 'Thali Yuva Sangh'}" <${process.env.EMAIL_FROM || 'noreply@thaliyuvasangh.org'}>`,
+      to: email,
+      subject: 'Your account request was not approved - Thali Yuva Sangh',
+      html: `
+        <div style="font-family:Arial,sans-serif;line-height:1.6;color:#333">
+          <h2 style="color:#1A3A69">Account Update</h2>
+          <p>Hello ${userName || ''},</p>
+          <p>Your account request was not approved.</p>
+          ${reason ? `<p><strong>Reason:</strong> ${String(reason)}</p>` : ''}
+          <p style="margin-top:24px;font-size:12px;color:#666">Thali Yuva Sangh</p>
+        </div>
+      `,
+      text: `Hello ${userName || ''},\n\nYour account request was not approved.${reason ? `\nReason: ${String(reason)}` : ''}\n\nThali Yuva Sangh`,
+    };
+
+    const info = await transporter.sendMail(mailOptions);
+    console.log('✅ Account rejected email sent:', info.messageId);
+    return { success: true, messageId: info.messageId };
+  } catch (error) {
+    console.error('❌ Error sending rejection email:', error);
+    throw error;
+  }
 };
 
 /**
@@ -291,4 +352,6 @@ const sendWelcomeEmail = async (email, userName, memberId) => {
 module.exports = {
   sendPasswordResetEmail,
   sendWelcomeEmail,
+  sendAccountApprovedEmail,
+  sendAccountRejectedEmail,
 };

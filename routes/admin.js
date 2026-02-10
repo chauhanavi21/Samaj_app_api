@@ -14,6 +14,7 @@ const {
   countDocuments,
   admin
 } = require('../config/firestore');
+const { sendAccountApprovedEmail, sendAccountRejectedEmail } = require('../utils/emailService');
 
 const router = express.Router();
 
@@ -36,12 +37,25 @@ router.get('/dashboard', async (req, res) => {
     const totalFamilyTreeEntries = await countDocuments(COLLECTIONS.FAMILY_TREE);
     
     // Get pending approval users
-    const pendingUsers = await queryDocuments(
-      COLLECTIONS.USERS,
-      [{ field: 'accountStatus', operator: '==', value: 'pending' }],
-      'createdAt',
-      'desc'
-    );
+    // Avoid composite index (accountStatus equality + createdAt orderBy) by sorting in memory.
+    let pendingUsers = await queryDocuments(COLLECTIONS.USERS, [
+      { field: 'accountStatus', operator: '==', value: 'pending' },
+    ]);
+
+    const toMillis = (ts) => {
+      if (!ts) return 0;
+      if (typeof ts === 'number') return ts;
+      if (typeof ts === 'string') {
+        const parsed = Date.parse(ts);
+        return Number.isFinite(parsed) ? parsed : 0;
+      }
+      if (typeof ts.toMillis === 'function') return ts.toMillis();
+      if (typeof ts.toDate === 'function') return ts.toDate().getTime();
+      if (typeof ts._seconds === 'number') return ts._seconds * 1000;
+      return 0;
+    };
+
+    pendingUsers.sort((a, b) => toMillis(b.createdAt) - toMillis(a.createdAt));
 
     // Get recent signups (last 30 days)
     const thirtyDaysAgo = new Date();
@@ -254,6 +268,154 @@ router.use((error, req, res, next) => {
 // ============================================
 // USER MANAGEMENT
 // ============================================
+
+// @route   GET /api/admin/approvals
+// @desc    Get pending approval users with pagination and search
+// @access  Admin only
+router.get('/approvals', async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const search = req.query.search || '';
+
+    let users = await queryDocuments(COLLECTIONS.USERS, [
+      { field: 'accountStatus', operator: '==', value: 'pending' },
+    ]);
+
+    const toMillis = (ts) => {
+      if (!ts) return 0;
+      if (typeof ts === 'number') return ts;
+      if (typeof ts === 'string') {
+        const parsed = Date.parse(ts);
+        return Number.isFinite(parsed) ? parsed : 0;
+      }
+      if (typeof ts.toMillis === 'function') return ts.toMillis();
+      if (typeof ts.toDate === 'function') return ts.toDate().getTime();
+      if (typeof ts._seconds === 'number') return ts._seconds * 1000;
+      return 0;
+    };
+
+    users.sort((a, b) => toMillis(b.createdAt) - toMillis(a.createdAt));
+
+    if (search) {
+      const searchLower = String(search).toLowerCase();
+      users = users.filter((user) =>
+        user.name?.toLowerCase().includes(searchLower) ||
+        user.email?.toLowerCase().includes(searchLower) ||
+        String(user.memberId || '').toLowerCase().includes(searchLower) ||
+        String(user.phone || '').toLowerCase().includes(searchLower)
+      );
+    }
+
+    users = users.map(({ password, ...user }) => user);
+
+    const total = users.length;
+    const skip = (page - 1) * limit;
+    const paginated = users.slice(skip, skip + limit);
+
+    res.json({
+      success: true,
+      data: paginated,
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit),
+      },
+    });
+  } catch (error) {
+    console.error('Get approvals error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch pending approvals',
+      error: error.message,
+    });
+  }
+});
+
+// @route   PUT /api/admin/users/:id/approve
+// @desc    Approve a pending user
+// @access  Admin only
+router.put('/users/:id/approve', async (req, res) => {
+  try {
+    const user = await getDocumentById(COLLECTIONS.USERS, req.params.id);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    const updated = await updateDocument(COLLECTIONS.USERS, req.params.id, {
+      accountStatus: 'approved',
+      requiresAdminApproval: false,
+      verificationStatus: 'verified',
+      approvedAt: admin.firestore.Timestamp.now(),
+      approvedBy: req.user.id,
+    });
+
+    try {
+      await sendAccountApprovedEmail(updated.email, updated.name);
+    } catch (e) {
+      // Non-fatal
+      console.error('Approval email failed:', e.message);
+    }
+
+    const { password, ...userWithoutPassword } = updated;
+    res.json({
+      success: true,
+      message: 'User approved',
+      data: userWithoutPassword,
+    });
+  } catch (error) {
+    console.error('Approve user error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to approve user',
+      error: error.message,
+    });
+  }
+});
+
+// @route   PUT /api/admin/users/:id/reject
+// @desc    Reject a pending user
+// @access  Admin only
+router.put('/users/:id/reject', async (req, res) => {
+  try {
+    const { reason } = req.body;
+    const user = await getDocumentById(COLLECTIONS.USERS, req.params.id);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    const updated = await updateDocument(COLLECTIONS.USERS, req.params.id, {
+      accountStatus: 'rejected',
+      requiresAdminApproval: false,
+      verificationStatus: 'unverified',
+      rejectionReason: reason || '',
+      rejectedAt: admin.firestore.Timestamp.now(),
+      rejectedBy: req.user.id,
+    });
+
+    try {
+      await sendAccountRejectedEmail(updated.email, updated.name, reason || '');
+    } catch (e) {
+      // Non-fatal
+      console.error('Rejection email failed:', e.message);
+    }
+
+    const { password, ...userWithoutPassword } = updated;
+    res.json({
+      success: true,
+      message: 'User rejected',
+      data: userWithoutPassword,
+    });
+  } catch (error) {
+    console.error('Reject user error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to reject user',
+      error: error.message,
+    });
+  }
+});
 
 // @route   GET /api/admin/users
 // @desc    Get all users with pagination and search
