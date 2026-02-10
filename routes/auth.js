@@ -149,6 +149,23 @@ router.post('/signup', async (req, res) => {
         }
 
         if (authorizedMember?.isUsed === true) {
+          const authorizedPhone = normalizePhone(authorizedMember.phoneNumber);
+          const authorizedMemberId = normalizeMemberId(authorizedMember.memberId);
+
+          const memberIdMatches = !!authorizedMemberId && normalizedMemberId === authorizedMemberId;
+          const phoneMatches = !!authorizedPhone && normalizedPhone === authorizedPhone;
+
+          // If this authorized entry is already used and the user is trying to reuse the same
+          // member/phone, block signup (do not create a pending duplicate account).
+          if (memberIdMatches || phoneMatches) {
+            console.log('❌ Authorized member already used - blocking signup');
+            return res.status(400).json({
+              success: false,
+              message: 'This Member ID / phone number is already registered. Please login or contact admin.',
+            });
+          }
+
+          // Otherwise fall back to pending approval
           requiresAdminApproval = true;
           accountStatus = 'pending';
           verificationStatus = 'pending_admin';
@@ -246,8 +263,14 @@ router.post('/signup', async (req, res) => {
 
     // Send welcome email
     try {
-      await sendWelcomeEmail(normalizedEmail, name, normalizedMemberId);
-      console.log('✅ Welcome email sent');
+      const result = await sendWelcomeEmail(normalizedEmail, name, normalizedMemberId);
+      if (result?.success) {
+        console.log('✅ Welcome email sent');
+      } else if (result?.skipped) {
+        console.log('ℹ️  Welcome email skipped (email not configured)');
+      } else {
+        console.log('⚠️  Welcome email not sent');
+      }
     } catch (emailError) {
       console.error('⚠️  Failed to send welcome email:', emailError.message);
     }

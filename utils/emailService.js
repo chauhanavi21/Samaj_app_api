@@ -97,16 +97,21 @@ const createTransporter = () => {
     });
   }
   
-  // Fallback: generic SMTP
-  return nodemailer.createTransport({
-    host: process.env.SMTP_HOST,
-    port: process.env.SMTP_PORT || 587,
-    secure: process.env.SMTP_SECURE === 'true',
-    auth: {
-      user: process.env.SMTP_USER,
-      pass: process.env.SMTP_PASS,
-    },
-  });
+   // Fallback: generic SMTP (only if SMTP_HOST is set)
+   if (process.env.SMTP_HOST) {
+     return nodemailer.createTransport({
+       host: process.env.SMTP_HOST,
+       port: process.env.SMTP_PORT || 587,
+       secure: process.env.SMTP_SECURE === 'true',
+       auth: {
+         user: process.env.SMTP_USER,
+         pass: process.env.SMTP_PASS,
+       },
+     });
+   }
+
+   // No email provider configured
+   return null;
 };
 
 /**
@@ -115,6 +120,10 @@ const createTransporter = () => {
 const sendAccountApprovedEmail = async (email, userName) => {
   try {
     const transporter = createTransporter();
+
+    if (!transporter) {
+      return { success: false, skipped: true };
+    }
     const mailOptions = {
       from: `"${process.env.EMAIL_FROM_NAME || 'Thali Yuva Sangh'}" <${process.env.EMAIL_FROM || 'noreply@thaliyuvasangh.org'}>`,
       to: email,
@@ -145,6 +154,10 @@ const sendAccountApprovedEmail = async (email, userName) => {
 const sendAccountRejectedEmail = async (email, userName, reason) => {
   try {
     const transporter = createTransporter();
+
+      if (!transporter) {
+        return { success: false, skipped: true };
+      }
     const mailOptions = {
       from: `"${process.env.EMAIL_FROM_NAME || 'Thali Yuva Sangh'}" <${process.env.EMAIL_FROM || 'noreply@thaliyuvasangh.org'}>`,
       to: email,
@@ -179,6 +192,10 @@ const sendAccountRejectedEmail = async (email, userName, reason) => {
 const sendPasswordResetEmail = async (email, resetToken, userName) => {
   try {
     const transporter = createTransporter();
+
+      if (!transporter) {
+        return { success: false, skipped: true };
+      }
     
     // Verify transporter configuration
     try {
@@ -294,6 +311,10 @@ ${process.env.EMAIL_FROM || 'contact@thaliyuvasangh.org'}
 const sendWelcomeEmail = async (email, userName, memberId) => {
   try {
     const transporter = createTransporter();
+
+      if (!transporter) {
+        return { success: false, skipped: true };
+      }
     
     const mailOptions = {
       from: `"${process.env.EMAIL_FROM_NAME || 'Thali Yuva Sangh'}" <${process.env.EMAIL_FROM || 'noreply@thaliyuvasangh.org'}>`,
