@@ -14,6 +14,31 @@ require('dotenv').config({ path: path.join(__dirname, '../.env') });
 
 const { db, admin, COLLECTIONS, createDocument, findOneDocument } = require('../config/firestore');
 
+function normalizeMemberId(value) {
+  const raw = String(value ?? '').trim();
+  if (!raw) return '';
+  if (/^[0-9]+\.[0]+$/.test(raw) || /e\+?/i.test(raw)) {
+    const n = Number(raw);
+    if (Number.isFinite(n)) return String(Math.trunc(n));
+  }
+  return raw;
+}
+
+function normalizePhone(value) {
+  const raw = String(value ?? '').trim();
+  if (!raw) return '';
+  if (/[eE]|\./.test(raw)) {
+    const n = Number(raw);
+    if (Number.isFinite(n)) {
+      const asInt = String(Math.trunc(n));
+      return asInt.length > 10 ? asInt.slice(-10) : asInt;
+    }
+  }
+  const digits = raw.replace(/\D/g, '');
+  if (!digits) return '';
+  return digits.length > 10 ? digits.slice(-10) : digits;
+}
+
 async function importExcelData(filePath) {
   try {
     console.log('📁 Reading Excel file:', filePath);
@@ -44,17 +69,17 @@ async function importExcelData(filePath) {
       const row = data[i];
       
       // Map common column name variations (case-insensitive with more patterns)
-      const memberId = String(
+      const memberId = normalizeMemberId(
         row.memberId || row.memberid || row.MemberId || row.MemberID || 
         row.member_id || row.MEMBER_ID || row.Member_ID || row['Member ID'] || 
         row['Member_ID'] || ''
-      ).trim();
+      );
       
-      const phoneNumber = String(
+      const phoneNumber = normalizePhone(
         row.phoneNumber || row.phonenumber || row.PhoneNumber || row.phone || 
         row.Phone || row.mobile || row.Mobile || row['Phone Number'] || 
         row.Phone_Number || row['Phone_Number'] || row.PHONE_NUMBER || ''
-      ).trim();
+      );
       
       const name = String(
         row.name || row.Name || row.NAME || row.fullName || row.FullName || ''
@@ -97,6 +122,18 @@ async function importExcelData(filePath) {
             { field: 'phoneNumber', operator: '==', value: phoneNumber }
           ]);
         }
+
+        if (!existing && memberId) {
+          existing = await findOneDocument(COLLECTIONS.AUTHORIZED_MEMBERS, [
+            { field: 'memberIdNormalized', operator: '==', value: memberId }
+          ]);
+        }
+
+        if (!existing && phoneNumber) {
+          existing = await findOneDocument(COLLECTIONS.AUTHORIZED_MEMBERS, [
+            { field: 'phoneNormalized', operator: '==', value: phoneNumber }
+          ]);
+        }
         
         if (existing) {
           const identifier = memberId || phoneNumber;
@@ -112,11 +149,14 @@ async function importExcelData(filePath) {
         
         if (memberId) memberData.memberId = memberId;
         if (phoneNumber) memberData.phoneNumber = phoneNumber;
+        if (memberId) memberData.memberIdNormalized = memberId;
+        if (phoneNumber) memberData.phoneNormalized = phoneNumber;
         if (name) memberData.name = name;
         if (email) memberData.email = email;
         if (notes) memberData.notes = notes;
-        
-        await createDocument(COLLECTIONS.AUTHORIZED_MEMBERS, memberData);
+
+        // Prefer using memberId as the document id (aligns with firestore.rules and avoids duplicates)
+        await createDocument(COLLECTIONS.AUTHORIZED_MEMBERS, memberData, memberId || null);
         
         successCount++;
         console.log(`✅ Row ${i + 1}: Imported member ${memberId || phoneNumber}`);

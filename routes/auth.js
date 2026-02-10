@@ -37,7 +37,34 @@ router.post('/signup', async (req, res) => {
     const { name, email, password, phone, memberId } = req.body;
 
     const normalizedEmail = String(email ?? '').trim().toLowerCase();
-    const normalizedMemberId = String(memberId ?? '').trim();
+    const normalizeMemberId = (value) => {
+      const raw = String(value ?? '').trim();
+      if (!raw) return '';
+      // If Excel/JSON provides numeric-like strings (e.g. "999999.0" or "9.99999E5"), coerce safely.
+      if (/^[0-9]+\.[0]+$/.test(raw) || /e\+?/i.test(raw)) {
+        const n = Number(raw);
+        if (Number.isFinite(n)) return String(Math.trunc(n));
+      }
+      return raw;
+    };
+
+    const normalizePhone = (value) => {
+      const raw = String(value ?? '').trim();
+      if (!raw) return '';
+      // Handle cases like "9428499522.0" or "9.428499522E9"
+      if (/[eE]|\./.test(raw)) {
+        const n = Number(raw);
+        if (Number.isFinite(n)) {
+          const asInt = String(Math.trunc(n));
+          return asInt.length > 10 ? asInt.slice(-10) : asInt;
+        }
+      }
+      const digits = raw.replace(/\D/g, '');
+      if (!digits) return '';
+      return digits.length > 10 ? digits.slice(-10) : digits;
+    };
+
+    const normalizedMemberId = normalizeMemberId(memberId);
 
     console.log('\n=== SIGNUP ATTEMPT ===');
     console.log('Email:', normalizedEmail);
@@ -92,20 +119,66 @@ router.post('/signup', async (req, res) => {
     let verificationStatus = 'verified';
     let authorizedMember = null;
 
-    const normalizePhone = (value) => {
-      const digits = String(value ?? '').replace(/\D/g, '');
-      // Compare on last 10 digits to tolerate country codes like +91
-      return digits.length > 10 ? digits.slice(-10) : digits;
-    };
-
-    const normalizeMemberId = (value) => String(value ?? '').trim();
-
     const maybeNumber = (value) => {
       const str = String(value ?? '').trim();
       if (!str) return null;
       if (!/^\d+$/.test(str)) return null;
       const n = Number(str);
       return Number.isFinite(n) ? n : null;
+    };
+
+    const getAuthorizedByMemberId = async (memberIdValue) => {
+      if (!memberIdValue) return null;
+
+      // Common pattern: docId is the memberId (matches firestore.rules path)
+      const byDocId = await getDocumentById(COLLECTIONS.AUTHORIZED_MEMBERS, memberIdValue);
+      if (byDocId) return byDocId;
+
+      // Field-based lookup (string then number)
+      const byStringField = await findOneDocument(COLLECTIONS.AUTHORIZED_MEMBERS, [
+        { field: 'memberId', operator: '==', value: memberIdValue },
+      ]);
+      if (byStringField) return byStringField;
+
+      const asNumber = maybeNumber(memberIdValue);
+      if (asNumber !== null) {
+        const byNumberField = await findOneDocument(COLLECTIONS.AUTHORIZED_MEMBERS, [
+          { field: 'memberId', operator: '==', value: asNumber },
+        ]);
+        if (byNumberField) return byNumberField;
+      }
+
+      // Optional normalized field if present
+      const byNormalized = await findOneDocument(COLLECTIONS.AUTHORIZED_MEMBERS, [
+        { field: 'memberIdNormalized', operator: '==', value: memberIdValue },
+      ]);
+      if (byNormalized) return byNormalized;
+
+      return null;
+    };
+
+    const getAuthorizedByPhone = async (phoneValue) => {
+      if (!phoneValue) return null;
+
+      const byStringField = await findOneDocument(COLLECTIONS.AUTHORIZED_MEMBERS, [
+        { field: 'phoneNumber', operator: '==', value: phoneValue },
+      ]);
+      if (byStringField) return byStringField;
+
+      const asNumber = maybeNumber(phoneValue);
+      if (asNumber !== null) {
+        const byNumberField = await findOneDocument(COLLECTIONS.AUTHORIZED_MEMBERS, [
+          { field: 'phoneNumber', operator: '==', value: asNumber },
+        ]);
+        if (byNumberField) return byNumberField;
+      }
+
+      const byNormalized = await findOneDocument(COLLECTIONS.AUTHORIZED_MEMBERS, [
+        { field: 'phoneNormalized', operator: '==', value: phoneValue },
+      ]);
+      if (byNormalized) return byNormalized;
+
+      return null;
     };
 
     try {
@@ -122,35 +195,17 @@ router.post('/signup', async (req, res) => {
         verificationStatus = 'pending_admin';
         console.log('⚠️  Phone not provided - requires admin approval');
       } else {
-        // Look up authorized record by memberId (primary) - tolerate string vs number storage
-        const memberIdNumber = maybeNumber(normalizedMemberId);
-        const memberIdCandidates = memberIdNumber === null ? [normalizedMemberId] : [normalizedMemberId, memberIdNumber];
-
-        authorizedMember = await findOneDocument(COLLECTIONS.AUTHORIZED_MEMBERS, [
-          {
-            field: 'memberId',
-            operator: memberIdCandidates.length > 1 ? 'in' : '==',
-            value: memberIdCandidates.length > 1 ? memberIdCandidates : memberIdCandidates[0],
-          },
-        ]);
+        // Look up authorized record by memberId (primary) with multiple strategies.
+        authorizedMember = await getAuthorizedByMemberId(normalizedMemberId);
 
         // If not found by memberId, try by phone (fallback)
         if (!authorizedMember) {
-          const phoneNumberValue = maybeNumber(normalizedPhone);
-          const phoneCandidates = phoneNumberValue === null ? [normalizedPhone] : [normalizedPhone, phoneNumberValue];
-
-          authorizedMember = await findOneDocument(COLLECTIONS.AUTHORIZED_MEMBERS, [
-            {
-              field: 'phoneNumber',
-              operator: phoneCandidates.length > 1 ? 'in' : '==',
-              value: phoneCandidates.length > 1 ? phoneCandidates : phoneCandidates[0],
-            },
-          ]);
+          authorizedMember = await getAuthorizedByPhone(normalizedPhone);
         }
 
         if (authorizedMember?.isUsed === true) {
           const authorizedPhone = normalizePhone(authorizedMember.phoneNumber);
-          const authorizedMemberId = normalizeMemberId(authorizedMember.memberId);
+          const authorizedMemberId = normalizeMemberId(authorizedMember.memberId || authorizedMember.id);
 
           const memberIdMatches = !!authorizedMemberId && normalizedMemberId === authorizedMemberId;
           const phoneMatches = !!authorizedPhone && normalizedPhone === authorizedPhone;
@@ -172,7 +227,7 @@ router.post('/signup', async (req, res) => {
           console.log('⚠️  Authorized member already used - requires admin approval');
         } else if (authorizedMember) {
           const authorizedPhone = normalizePhone(authorizedMember.phoneNumber);
-          const authorizedMemberId = normalizeMemberId(authorizedMember.memberId);
+          const authorizedMemberId = normalizeMemberId(authorizedMember.memberId || authorizedMember.id);
 
           const memberIdMatches = !!authorizedMemberId && normalizedMemberId === authorizedMemberId;
           const phoneMatches = !!authorizedPhone && normalizedPhone === authorizedPhone;
