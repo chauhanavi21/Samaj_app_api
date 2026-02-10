@@ -46,6 +46,7 @@ router.post('/', async (req, res) => {
     // Create family tree entry
     const familyTree = await createDocument(COLLECTIONS.FAMILY_TREE, {
       createdBy: req.user.id,
+      memberId: req.user.memberId || '',
       personName,
       personPhone: personPhone || '',
       personDateOfBirth: personDateOfBirth || null,
@@ -178,6 +179,18 @@ router.put('/:id', async (req, res) => {
         success: false,
         message: 'Not authorized to update this entry',
       });
+    }
+
+    // memberId is locked once created
+    if (req.body.memberId !== undefined) {
+      const currentMemberId = String(familyTree.memberId || '').trim();
+      const requestedMemberId = String(req.body.memberId || '').trim();
+      if (requestedMemberId && requestedMemberId !== currentMemberId) {
+        return res.status(400).json({
+          success: false,
+          message: 'Member ID cannot be changed',
+        });
+      }
     }
 
     // Build update fields

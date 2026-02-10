@@ -34,6 +34,25 @@ exports.protect = async (req, res, next) => {
 
       // Remove password from user object
       delete user.password;
+
+      // Block access for non-approved accounts
+      if (user.accountStatus === 'rejected') {
+        return res.status(403).json({
+          success: false,
+          message: 'Your account has been rejected. Please contact admin.',
+          rejectionReason: user.rejectionReason,
+        });
+      }
+
+      if (user.accountStatus === 'pending') {
+        return res.status(403).json({
+          success: false,
+          message: 'Your account is pending admin approval.',
+          accountStatus: 'pending',
+          requiresApproval: true,
+        });
+      }
+
       req.user = user;
 
       next();

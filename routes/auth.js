@@ -92,58 +92,65 @@ router.post('/signup', async (req, res) => {
     let verificationStatus = 'verified';
     let authorizedMember = null;
 
+    const normalizePhone = (value) => {
+      const digits = String(value ?? '').replace(/\D/g, '');
+      // Compare on last 10 digits to tolerate country codes like +91
+      return digits.length > 10 ? digits.slice(-10) : digits;
+    };
+
     try {
-      const normalizedPhone = String(phone ?? '').replace(/[\s\-\(\)]/g, '').trim();
+      const normalizedPhone = normalizePhone(phone);
       
       console.log('🔍 Checking authorized members list...');
       console.log('Looking for - Member ID:', normalizedMemberId, ', Phone:', normalizedPhone);
       
-      // Try to find by memberId first
-      if (normalizedMemberId) {
-        authorizedMember = await findOneDocument(COLLECTIONS.AUTHORIZED_MEMBERS, [
-          { field: 'memberId', operator: '==', value: normalizedMemberId }
-        ]);
-      }
-      
-      // If not found by memberId, try by phone
-      if (!authorizedMember && normalizedPhone) {
-        authorizedMember = await findOneDocument(COLLECTIONS.AUTHORIZED_MEMBERS, [
-          { field: 'phoneNumber', operator: '==', value: normalizedPhone }
-        ]);
-      }
-
-      if (authorizedMember) {
-        const authorizedPhone = (authorizedMember.phoneNumber || '').replace(/[\s\-\(\)]/g, '').trim();
-        const authorizedMemberId = authorizedMember.memberId || '';
-        
-        let matchCount = 0;
-        let matchDetails = [];
-        
-        if (authorizedMemberId && normalizedMemberId === authorizedMemberId) {
-          matchCount++;
-          matchDetails.push('memberId matches');
-        }
-        
-        if (authorizedPhone && normalizedPhone === authorizedPhone) {
-          matchCount++;
-          matchDetails.push('phone matches');
-        }
-        
-        if (matchCount === 2) {
-          isVerified = true;
-          console.log('✅ Member verified - perfect match (memberId + phone)');
-        } else if (matchCount === 1) {
-          // ANY partial match requires admin approval
-          requiresAdminApproval = true;
-          accountStatus = 'pending';
-          verificationStatus = 'pending_admin';
-          console.log('⚠️  Partial match - requires admin approval');
-        }
-      } else {
+      // Strict rule: only auto-approve when BOTH memberId + phone match
+      // (Phone is optional for signup, but missing phone => pending approval)
+      if (!normalizedPhone) {
         requiresAdminApproval = true;
         accountStatus = 'pending';
         verificationStatus = 'pending_admin';
-        console.log('⚠️  Not found in authorized members - requires admin approval');
+        console.log('⚠️  Phone not provided - requires admin approval');
+      } else {
+        // Look up authorized record by memberId (primary)
+        authorizedMember = await findOneDocument(COLLECTIONS.AUTHORIZED_MEMBERS, [
+          { field: 'memberId', operator: '==', value: normalizedMemberId }
+        ]);
+
+        // If not found by memberId, try by phone (fallback)
+        if (!authorizedMember) {
+          authorizedMember = await findOneDocument(COLLECTIONS.AUTHORIZED_MEMBERS, [
+            { field: 'phoneNumber', operator: '==', value: normalizedPhone }
+          ]);
+        }
+
+        if (authorizedMember?.isUsed) {
+          requiresAdminApproval = true;
+          accountStatus = 'pending';
+          verificationStatus = 'pending_admin';
+          console.log('⚠️  Authorized member already used - requires admin approval');
+        } else if (authorizedMember) {
+          const authorizedPhone = normalizePhone(authorizedMember.phoneNumber);
+          const authorizedMemberId = String(authorizedMember.memberId || '').trim();
+
+          const memberIdMatches = !!authorizedMemberId && normalizedMemberId === authorizedMemberId;
+          const phoneMatches = !!authorizedPhone && normalizedPhone === authorizedPhone;
+
+          if (memberIdMatches && phoneMatches) {
+            isVerified = true;
+            console.log('✅ Member verified - perfect match (memberId + phone)');
+          } else {
+            requiresAdminApproval = true;
+            accountStatus = 'pending';
+            verificationStatus = 'pending_admin';
+            console.log('⚠️  Mismatch with authorized record - requires admin approval');
+          }
+        } else {
+          requiresAdminApproval = true;
+          accountStatus = 'pending';
+          verificationStatus = 'pending_admin';
+          console.log('⚠️  Not found in authorized members - requires admin approval');
+        }
       }
     } catch (verificationError) {
       console.error('⚠️  Verification check failed:', verificationError.message);
@@ -176,6 +183,30 @@ router.post('/signup', async (req, res) => {
 
     console.log('✅ User created in Firestore:', newUser.id);
 
+    // Auto-create a family tree entry on account creation
+    try {
+      await createDocument(COLLECTIONS.FAMILY_TREE, {
+        createdBy: newUser.id,
+        memberId: normalizedMemberId,
+        personName: name,
+        personPhone: phone || '',
+        personDateOfBirth: null,
+        personOccupation: '',
+        spouseName: '',
+        spousePhone: '',
+        fatherName: '',
+        fatherPhone: '',
+        motherName: '',
+        motherPhone: '',
+        children: [],
+        address: '',
+        notes: '',
+      });
+      console.log('✅ Family tree entry auto-created for user:', newUser.id);
+    } catch (familyTreeError) {
+      console.error('⚠️  Failed to auto-create family tree entry:', familyTreeError.message);
+    }
+
     // Mark authorized member as used if verified
     if (isVerified && authorizedMember) {
       await updateDocument(COLLECTIONS.AUTHORIZED_MEMBERS, authorizedMember.id, {
@@ -194,8 +225,8 @@ router.post('/signup', async (req, res) => {
       console.error('⚠️  Failed to send welcome email:', emailError.message);
     }
 
-    // Generate token
-    const token = generateToken(newUser.id);
+    // Generate token only for approved users
+    const token = requiresAdminApproval ? null : generateToken(newUser.id);
 
     console.log('✅ Signup successful');
 

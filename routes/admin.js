@@ -273,12 +273,24 @@ router.get('/users', async (req, res) => {
     }
 
     // Get all users matching conditions (we'll filter search in memory)
-    let users = await queryDocuments(
-      COLLECTIONS.USERS,
-      conditions,
-      'createdAt',
-      'desc'
-    );
+    // Avoid Firestore composite-index requirement (role equality + createdAt orderBy)
+    // by fetching without orderBy and sorting in memory.
+    let users = await queryDocuments(COLLECTIONS.USERS, conditions);
+
+    const toMillis = (ts) => {
+      if (!ts) return 0;
+      if (typeof ts === 'number') return ts;
+      if (typeof ts === 'string') {
+        const parsed = Date.parse(ts);
+        return Number.isFinite(parsed) ? parsed : 0;
+      }
+      if (typeof ts.toMillis === 'function') return ts.toMillis();
+      if (typeof ts.toDate === 'function') return ts.toDate().getTime();
+      if (typeof ts._seconds === 'number') return ts._seconds * 1000;
+      return 0;
+    };
+
+    users.sort((a, b) => toMillis(b.createdAt) - toMillis(a.createdAt));
     
     // Apply search filter
     if (search) {
