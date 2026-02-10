@@ -48,7 +48,7 @@ router.post('/signup', async (req, res) => {
       return raw;
     };
 
-    const normalizePhone = (value) => {
+    const normalizePhoneLenient = (value) => {
       const raw = String(value ?? '').trim();
       if (!raw) return '';
       // Handle cases like "9428499522.0" or "9.428499522E9"
@@ -61,7 +61,37 @@ router.post('/signup', async (req, res) => {
       }
       const digits = raw.replace(/\D/g, '');
       if (!digits) return '';
+      // Compare on last 10 digits to tolerate country codes like +91
       return digits.length > 10 ? digits.slice(-10) : digits;
+    };
+
+    const normalizePhoneProvided = (value) => {
+      const raw = String(value ?? '').trim();
+      if (!raw) return '';
+
+      // Convert numeric-ish strings coming from clients
+      let digits = raw;
+      if (/[eE]|\./.test(digits)) {
+        const n = Number(digits);
+        if (Number.isFinite(n)) {
+          digits = String(Math.trunc(n));
+        }
+      }
+
+      digits = String(digits).replace(/\D/g, '');
+      if (!digits) return '';
+
+      // Accept common prefixes:
+      // - India trunk prefix 0xxxxxxxxxx (11 digits)
+      // - India country code 91xxxxxxxxxx (12 digits)
+      if (digits.length === 11 && digits.startsWith('0')) return digits.slice(1);
+      if (digits.length === 12 && digits.startsWith('91')) return digits.slice(2);
+
+      // Exact 10 digits is the required canonical format
+      if (digits.length === 10) return digits;
+
+      // Anything else is ambiguous; do not silently truncate
+      return null;
     };
 
     const normalizedMemberId = normalizeMemberId(memberId);
@@ -205,7 +235,15 @@ router.post('/signup', async (req, res) => {
     };
 
     try {
-      const normalizedPhone = normalizePhone(phone);
+      const normalizedPhone = normalizePhoneProvided(phone);
+
+      if (normalizedPhone === null) {
+        console.log('❌ Validation failed: Invalid phone format', String(phone ?? ''));
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid phone number. Please enter a 10-digit phone number (or +91 / leading 0).',
+        });
+      }
       
       console.log('🔍 Checking authorized members list...');
       console.log('Looking for - Member ID:', normalizedMemberId, ', Phone:', normalizedPhone);
@@ -227,7 +265,7 @@ router.post('/signup', async (req, res) => {
         }
 
         if (authorizedMember?.isUsed === true) {
-          const authorizedPhone = normalizePhone(authorizedMember.phoneNumber);
+          const authorizedPhone = normalizePhoneLenient(authorizedMember.phoneNumber);
           const authorizedMemberId = normalizeMemberId(authorizedMember.memberId || authorizedMember.id);
 
           const memberIdMatches = !!authorizedMemberId && normalizedMemberId === authorizedMemberId;
@@ -287,7 +325,7 @@ router.post('/signup', async (req, res) => {
             console.log('⚠️  Authorized member already used - requires admin approval');
           }
         } else if (authorizedMember) {
-          const authorizedPhone = normalizePhone(authorizedMember.phoneNumber);
+          const authorizedPhone = normalizePhoneLenient(authorizedMember.phoneNumber);
           const authorizedMemberId = normalizeMemberId(authorizedMember.memberId || authorizedMember.id);
 
           const memberIdMatches = !!authorizedMemberId && normalizedMemberId === authorizedMemberId;
@@ -328,7 +366,10 @@ router.post('/signup', async (req, res) => {
       email: normalizedEmail,
       password: hashedPassword,
       role: 'user',
-      phone: phone || '',
+      // Store canonical phone (10 digits) to keep matching consistent
+      phone: (typeof phone !== 'undefined' && phone !== null && String(phone).trim() !== '')
+        ? normalizePhoneProvided(phone)
+        : '',
       memberId: normalizedMemberId,
       accountStatus,
       verificationStatus,
