@@ -12,11 +12,15 @@ const {
   deleteDocument,
   queryDocuments,
   countDocuments,
-  admin
+  admin,
+  auth
 } = require('../config/firestore');
-const { sendAccountApprovedEmail, sendAccountRejectedEmail } = require('../utils/emailService');
 
 const router = express.Router();
+
+// Simple in-memory cache to reduce repeated heavy dashboard queries
+const DASHBOARD_CACHE_TTL_MS = 30 * 1000;
+let dashboardCache = { ts: 0, data: null };
 
 // Apply protection and admin authorization to all routes
 router.use(protect, authorize('admin'));
@@ -30,18 +34,22 @@ router.use(protect, authorize('admin'));
 // @access  Admin only
 router.get('/dashboard', async (req, res) => {
   try {
-    // Get total counts
-    const totalUsers = await countDocuments(COLLECTIONS.USERS);
-    const totalAdmins = await countDocuments(COLLECTIONS.USERS, [{ field: 'role', operator: '==', value: 'admin' }]);
-    const totalRegularUsers = await countDocuments(COLLECTIONS.USERS, [{ field: 'role', operator: '==', value: 'user' }]);
-    const totalFamilyTreeEntries = await countDocuments(COLLECTIONS.FAMILY_TREE);
-    
-    // Get pending approval users
-    // Avoid composite index (accountStatus equality + createdAt orderBy) by sorting in memory.
-    let pendingUsers = await queryDocuments(COLLECTIONS.USERS, [
-      { field: 'accountStatus', operator: '==', value: 'pending' },
-    ]);
+    const now = Date.now();
+    if (dashboardCache.data && now - dashboardCache.ts < DASHBOARD_CACHE_TTL_MS) {
+      return res.json({
+        success: true,
+        data: dashboardCache.data,
+      });
+    }
 
+    // Get total counts (in parallel)
+    const [totalUsers, totalAdmins, totalRegularUsers, totalFamilyTreeEntries] = await Promise.all([
+      countDocuments(COLLECTIONS.USERS),
+      countDocuments(COLLECTIONS.USERS, [{ field: 'role', operator: '==', value: 'admin' }]),
+      countDocuments(COLLECTIONS.USERS, [{ field: 'role', operator: '==', value: 'user' }]),
+      countDocuments(COLLECTIONS.FAMILY_TREE),
+    ]);
+    
     const toMillis = (ts) => {
       if (!ts) return 0;
       if (typeof ts === 'number') return ts;
@@ -55,30 +63,34 @@ router.get('/dashboard', async (req, res) => {
       return 0;
     };
 
-    pendingUsers.sort((a, b) => toMillis(b.createdAt) - toMillis(a.createdAt));
-
     // Get recent signups (last 30 days)
     const thirtyDaysAgo = new Date();
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
     const thirtyDaysAgoTimestamp = admin.firestore.Timestamp.fromDate(thirtyDaysAgo);
-    
-    const recentSignups = await queryDocuments(
-      COLLECTIONS.USERS,
-      [{ field: 'createdAt', operator: '>=', value: thirtyDaysAgoTimestamp }],
-      'createdAt',
-      'desc',
-      10
-    );
 
     // Get signups per month for the last 6 months (simplified for Firestore)
     const sixMonthsAgo = new Date();
     sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
     const sixMonthsAgoTimestamp = admin.firestore.Timestamp.fromDate(sixMonthsAgo);
-    
-    const recentUsers = await queryDocuments(
-      COLLECTIONS.USERS,
-      [{ field: 'createdAt', operator: '>=', value: sixMonthsAgoTimestamp }]
-    );
+
+    // Kick off heavy queries in parallel
+    const [pendingUsersRaw, recentSignups, recentUsers, allFamilyTrees] = await Promise.all([
+      // Pending approvals (avoid composite index by sorting in memory)
+      queryDocuments(COLLECTIONS.USERS, [{ field: 'accountStatus', operator: '==', value: 'pending' }]),
+      queryDocuments(
+        COLLECTIONS.USERS,
+        [{ field: 'createdAt', operator: '>=', value: thirtyDaysAgoTimestamp }],
+        'createdAt',
+        'desc',
+        10
+      ),
+      queryDocuments(COLLECTIONS.USERS, [{ field: 'createdAt', operator: '>=', value: sixMonthsAgoTimestamp }]),
+      // This can be large; caching + parallelism reduces perceived lag.
+      getAllDocuments(COLLECTIONS.FAMILY_TREE),
+    ]);
+
+    const pendingUsers = Array.isArray(pendingUsersRaw) ? pendingUsersRaw : [];
+    pendingUsers.sort((a, b) => toMillis(b.createdAt) - toMillis(a.createdAt));
     
     // Group by month
     const signupTrend = recentUsers.reduce((acc, user) => {
@@ -100,7 +112,6 @@ router.get('/dashboard', async (req, res) => {
     });
 
     // Get most active users (by family tree entries)
-    const allFamilyTrees = await getAllDocuments(COLLECTIONS.FAMILY_TREE);
     const userEntryCount = allFamilyTrees.reduce((acc, entry) => {
       const userId = entry.createdBy;
       acc[userId] = (acc[userId] || 0) + 1;
@@ -127,37 +138,41 @@ router.get('/dashboard', async (req, res) => {
     
     const filteredActiveUsers = activeUsers.filter(u => u !== null);
 
+    const responseData = {
+      totals: {
+        users: totalUsers,
+        admins: totalAdmins,
+        regularUsers: totalRegularUsers,
+        familyTreeEntries: totalFamilyTreeEntries,
+        pendingApprovals: pendingUsers.length,
+      },
+      pendingUsers: pendingUsers.map((user) => ({
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        memberId: user.memberId,
+        phone: user.phone,
+        verificationStatus: user.verificationStatus,
+        requiresAdminApproval: user.requiresAdminApproval,
+        createdAt: user.createdAt,
+      })),
+      recentSignups: recentSignups.map((user) => ({
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        memberId: user.memberId,
+        createdAt: user.createdAt,
+      })),
+      signupTrend: signupTrendArray,
+      activeUsers: filteredActiveUsers,
+    };
+
+    dashboardCache = { ts: Date.now(), data: responseData };
+
     res.json({
       success: true,
-      data: {
-        totals: {
-          users: totalUsers,
-          admins: totalAdmins,
-          regularUsers: totalRegularUsers,
-          familyTreeEntries: totalFamilyTreeEntries,
-          pendingApprovals: pendingUsers.length, // Add pending count
-        },
-        pendingUsers: pendingUsers.map(user => ({
-          id: user.id,
-          name: user.name,
-          email: user.email,
-          memberId: user.memberId,
-          phone: user.phone,
-          verificationStatus: user.verificationStatus,
-          requiresAdminApproval: user.requiresAdminApproval,
-          createdAt: user.createdAt,
-        })),
-        recentSignups: recentSignups.map(user => ({
-          id: user.id,
-          name: user.name,
-          email: user.email,
-          role: user.role,
-          memberId: user.memberId,
-          createdAt: user.createdAt,
-        })),
-        signupTrend: signupTrendArray,
-        activeUsers: filteredActiveUsers,
-      },
+      data: responseData,
     });
   } catch (error) {
     console.error('Dashboard stats error:', error);
@@ -351,12 +366,7 @@ router.put('/users/:id/approve', async (req, res) => {
       approvedBy: req.user.id,
     });
 
-    try {
-      await sendAccountApprovedEmail(updated.email, updated.name);
-    } catch (e) {
-      // Non-fatal
-      console.error('Approval email failed:', e.message);
-    }
+    // Email notifications are handled via Firebase Auth templates / client flows.
 
     const { password, ...userWithoutPassword } = updated;
     res.json({
@@ -394,12 +404,7 @@ router.put('/users/:id/reject', async (req, res) => {
       rejectedBy: req.user.id,
     });
 
-    try {
-      await sendAccountRejectedEmail(updated.email, updated.name, reason || '');
-    } catch (e) {
-      // Non-fatal
-      console.error('Rejection email failed:', e.message);
-    }
+    // Email notifications are handled via Firebase Auth templates / client flows.
 
     const { password, ...userWithoutPassword } = updated;
     res.json({
@@ -736,11 +741,57 @@ router.put('/users/:id/password', async (req, res) => {
       });
     }
 
-    // Note: Password validation and hashing should be handled by auth service
-    // This is a placeholder - implement proper password handling with bcrypt
-    return res.status(501).json({
-      success: false,
-      message: 'Password update not implemented for Firestore yet. Use Firebase Auth.',
+    const user = await getDocumentById(COLLECTIONS.USERS, req.params.id);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found',
+      });
+    }
+
+    // Resolve Firebase uid.
+    // - New system: Firestore doc id == Firebase uid
+    // - Legacy: Firestore stores `firebaseUid`
+    let firebaseUid = user.firebaseUid || null;
+    if (!firebaseUid && typeof user.id === 'string' && user.id) {
+      try {
+        await auth.getUser(user.id);
+        firebaseUid = user.id;
+      } catch (e) {
+        // not a Firebase uid
+      }
+    }
+
+    if (!firebaseUid && user.email) {
+      try {
+        const fbUser = await auth.getUserByEmail(String(user.email).toLowerCase());
+        firebaseUid = fbUser.uid;
+      } catch (e) {
+        // ignore
+      }
+    }
+
+    if (!firebaseUid) {
+      return res.status(400).json({
+        success: false,
+        message: 'User is not linked to Firebase Auth. Please migrate this user first.',
+      });
+    }
+
+    await auth.updateUser(firebaseUid, { password: newPassword });
+
+    // Ensure mapping is stored for legacy user docs.
+    if (!user.firebaseUid || user.firebaseUid !== firebaseUid) {
+      try {
+        await updateDocument(COLLECTIONS.USERS, user.id, { firebaseUid });
+      } catch (e) {
+        // non-fatal
+      }
+    }
+
+    res.json({
+      success: true,
+      message: 'Password changed successfully',
     });
   } catch (error) {
     console.error('Change password error:', error);
@@ -841,6 +892,24 @@ router.delete('/users/:id', async (req, res) => {
     }
 
     await deleteDocument(COLLECTIONS.USERS, user.id);
+
+    // Best-effort cleanup: remove Firebase Auth user so they cannot sign in.
+    try {
+      let firebaseUid = user.firebaseUid || null;
+      if (!firebaseUid && user.email) {
+        try {
+          const fbUser = await auth.getUserByEmail(String(user.email).toLowerCase());
+          firebaseUid = fbUser.uid;
+        } catch (e) {
+          // ignore
+        }
+      }
+      if (firebaseUid) {
+        await auth.deleteUser(firebaseUid);
+      }
+    } catch (e) {
+      // non-fatal
+    }
 
     res.json({
       success: true,

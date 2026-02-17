@@ -1,30 +1,21 @@
 const express = require('express');
-const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
-const crypto = require('crypto');
 const { auth, db, COLLECTIONS, createDocument, getDocumentById, getDocumentsByField, queryDocuments, findOneDocument, updateDocument } = require('../config/firestore');
-const { protect } = require('../middleware/auth');
-const { sendPasswordResetEmail, sendWelcomeEmail } = require('../utils/emailService');
+const { verifyFirebaseToken } = require('../middleware/auth');
 
 const router = express.Router();
 
-// Generate JWT Token
-const generateToken = (userId) => {
-  if (!process.env.JWT_SECRET) {
-    throw new Error('JWT_SECRET is not configured. Please set it in .env file');
-  }
-  return jwt.sign({ id: userId }, process.env.JWT_SECRET, {
-    expiresIn: '30d',
-  });
-};
-
-// Hash password
-async function hashPassword(password) {
-  const salt = await bcrypt.genSalt(10);
-  return await bcrypt.hash(password, salt);
+async function getUserByFirebaseUid(firebaseUid) {
+  if (!firebaseUid) return null;
+  // Preferred: user doc id == firebase uid
+  const byId = await getDocumentById(COLLECTIONS.USERS, firebaseUid);
+  if (byId) return byId;
+  // Back-compat: older users may store uid in `firebaseUid`
+  return await findOneDocument(COLLECTIONS.USERS, [
+    { field: 'firebaseUid', operator: '==', value: firebaseUid },
+  ]);
 }
 
-// Compare password
 async function comparePassword(enteredPassword, hashedPassword) {
   return await bcrypt.compare(enteredPassword, hashedPassword);
 }
@@ -357,14 +348,76 @@ router.post('/signup', async (req, res) => {
       verificationStatus = 'pending_admin';
     }
 
-    // Hash password
-    const hashedPassword = await hashPassword(password);
+    // Create/update Firebase Auth user (source of truth for password/login)
+    let firebaseUid = reapplyUser?.firebaseUid || null;
+
+    // If we have a stored uid, ensure it exists.
+    if (firebaseUid) {
+      try {
+        await auth.getUser(firebaseUid);
+      } catch (e) {
+        firebaseUid = null;
+      }
+    }
+
+    // Try to find existing Firebase user by email (covers legacy users created elsewhere).
+    if (!firebaseUid) {
+      try {
+        const existingFirebaseUser = await auth.getUserByEmail(normalizedEmail);
+
+        // Safety: if a Firebase Auth user already exists for this email but we don't have a
+        // corresponding Firestore user record for the email/member flow, do not allow signup
+        // to overwrite that account's password.
+        if (!existingByEmail && !reapplyUser) {
+          return res.status(400).json({
+            success: false,
+            message: 'An account already exists with this email. Please login or contact admin.',
+          });
+        }
+
+        firebaseUid = existingFirebaseUser.uid;
+      } catch (e) {
+        // ignore not-found
+      }
+    }
+
+    // Create Firebase user if needed, otherwise update password/display name.
+    try {
+      if (!firebaseUid) {
+        const created = await auth.createUser({
+          email: normalizedEmail,
+          password,
+          displayName: name,
+        });
+        firebaseUid = created.uid;
+      } else {
+        await auth.updateUser(firebaseUid, {
+          email: normalizedEmail,
+          password,
+          displayName: name,
+        });
+      }
+    } catch (firebaseError) {
+      const msg = String(firebaseError?.message || 'Failed to create account');
+      const code = String(firebaseError?.code || '');
+      if (code.includes('email-already-exists')) {
+        return res.status(400).json({
+          success: false,
+          message: 'User already exists with this email',
+        });
+      }
+      console.error('❌ Firebase Auth user create/update failed:', msg);
+      return res.status(500).json({
+        success: false,
+        message: 'Error creating account',
+        error: process.env.NODE_ENV === 'development' ? msg : undefined,
+      });
+    }
 
     // Create or update user in Firestore
     const userData = {
       name,
       email: normalizedEmail,
-      password: hashedPassword,
       role: 'user',
       // Store canonical phone (10 digits) to keep matching consistent
       phone: (typeof phone !== 'undefined' && phone !== null && String(phone).trim() !== '')
@@ -374,6 +427,7 @@ router.post('/signup', async (req, res) => {
       accountStatus,
       verificationStatus,
       requiresAdminApproval,
+      firebaseUid,
       notificationPreferences: reapplyUser?.notificationPreferences || {
         email: true,
         sms: false,
@@ -393,7 +447,8 @@ router.post('/signup', async (req, res) => {
       });
       console.log('✅ User updated (re-apply) in Firestore:', savedUser.id);
     } else {
-      savedUser = await createDocument(COLLECTIONS.USERS, userData);
+      // For new users, use Firebase uid as Firestore doc id.
+      savedUser = await createDocument(COLLECTIONS.USERS, userData, firebaseUid);
       console.log('✅ User created in Firestore:', savedUser.id);
     }
 
@@ -448,22 +503,9 @@ router.post('/signup', async (req, res) => {
       console.log('✅ Authorized member marked as used');
     }
 
-    // Send welcome email
-    try {
-      const result = await sendWelcomeEmail(normalizedEmail, name, normalizedMemberId);
-      if (result?.success) {
-        console.log('✅ Welcome email sent');
-      } else if (result?.skipped) {
-        console.log('ℹ️  Welcome email skipped (email not configured)');
-      } else {
-        console.log('⚠️  Welcome email not sent');
-      }
-    } catch (emailError) {
-      console.error('⚠️  Failed to send welcome email:', emailError.message);
-    }
-
-    // Generate token only for approved users
-    const token = requiresAdminApproval ? null : generateToken(savedUser.id);
+    // Email flows are handled via Firebase Auth on the client:
+    // - sendEmailVerification(auth.currentUser)
+    // - sendPasswordResetEmail(auth, email)
 
     console.log('✅ Signup successful');
 
@@ -472,7 +514,7 @@ router.post('/signup', async (req, res) => {
       message: requiresAdminApproval 
         ? 'Account created successfully. Your account is pending admin approval.'
         : 'Account created successfully!',
-      token,
+      token: null,
       user: {
         id: savedUser.id,
         name: savedUser.name,
@@ -482,6 +524,7 @@ router.post('/signup', async (req, res) => {
         accountStatus: savedUser.accountStatus,
         verificationStatus: savedUser.verificationStatus,
         requiresAdminApproval: savedUser.requiresAdminApproval,
+        firebaseUid: savedUser.firebaseUid,
       },
     });
 
@@ -502,79 +545,96 @@ router.post('/login', async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    console.log('\n=== LOGIN ATTEMPT ===');
-    console.log('Email:', email);
-
+    // This endpoint is ONLY for migrating legacy accounts that stored a bcrypt password in Firestore.
+    // Normal login happens client-side via Firebase Auth.
     if (!email || !password) {
-      console.log('❌ Validation failed: Missing credentials');
       return res.status(400).json({
         success: false,
         message: 'Please provide email and password',
       });
     }
 
-    const normalizedEmail = email.trim().toLowerCase();
+    const normalizedEmail = String(email).trim().toLowerCase();
 
-    // Find user by email
     const user = await findOneDocument(COLLECTIONS.USERS, [
-      { field: 'email', operator: '==', value: normalizedEmail }
+      { field: 'email', operator: '==', value: normalizedEmail },
     ]);
 
     if (!user) {
-      console.log('❌ User not found');
       return res.status(401).json({
         success: false,
         message: 'Invalid credentials',
       });
     }
 
-    // Check password
-    const isPasswordValid = await comparePassword(password, user.password);
-
-    if (!isPasswordValid) {
-      console.log('❌ Invalid password');
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid credentials',
-      });
-    }
-
-    // Check if account is approved
+    // Match previous behavior for pending/rejected.
     if (user.accountStatus === 'rejected') {
-      console.log('❌ Account rejected');
       return res.status(403).json({
         success: false,
         message: 'Your account has been rejected. Please contact admin.',
+        accountStatus: 'rejected',
         rejectionReason: user.rejectionReason,
       });
     }
 
     if (user.accountStatus === 'pending') {
-      console.log('⚠️  Account pending approval');
       return res.status(403).json({
         success: false,
         message: 'Your account is pending admin approval.',
+        accountStatus: 'pending',
+        requiresApproval: true,
       });
     }
 
-    console.log('✅ Login successful');
+    // Already migrated: do not accept password here.
+    if (user.firebaseUid) {
+      return res.status(410).json({
+        success: false,
+        message: 'This account is already using Firebase Auth. Please login from the app and use Forgot Password if needed.',
+      });
+    }
 
-    const token = generateToken(user.id);
+    if (!user.password) {
+      return res.status(410).json({
+        success: false,
+        message: 'This account must login using Firebase Auth. Please use Forgot Password if needed.',
+      });
+    }
+
+    const isPasswordValid = await comparePassword(password, user.password);
+    if (!isPasswordValid) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid credentials',
+      });
+    }
+
+    // Link/create Firebase Auth account.
+    let firebaseUid = null;
+    try {
+      const existingFirebaseUser = await auth.getUserByEmail(normalizedEmail);
+      firebaseUid = existingFirebaseUser.uid;
+      await auth.updateUser(firebaseUid, { password, displayName: user.name || '' });
+    } catch (e) {
+      const code = String(e?.code || '');
+      if (code.includes('user-not-found')) {
+        const created = await auth.createUser({
+          email: normalizedEmail,
+          password,
+          displayName: user.name || '',
+        });
+        firebaseUid = created.uid;
+      } else {
+        throw e;
+      }
+    }
+
+    await updateDocument(COLLECTIONS.USERS, user.id, { firebaseUid });
 
     res.json({
       success: true,
-      message: 'Login successful',
-      token,
-      user: {
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-        memberId: user.memberId,
-        phone: user.phone,
-        accountStatus: user.accountStatus,
-        verificationStatus: user.verificationStatus,
-      },
+      migrated: true,
+      message: 'Account migrated to Firebase Auth. Please login again.',
     });
 
   } catch (error) {
@@ -588,62 +648,16 @@ router.post('/login', async (req, res) => {
 });
 
 // @route   POST /api/auth/forgot-password
-// @desc    Initiate password reset using Firebase Auth
+// @desc    Password reset is handled by Firebase Auth on the client
 // @access  Public
 router.post('/forgot-password', async (req, res) => {
   try {
-    const { email } = req.body;
-
-    if (!email) {
-      return res.status(400).json({
-        success: false,
-        message: 'Please provide email',
-      });
-    }
-
-    const normalizedEmail = email.trim().toLowerCase();
-
-    // Check if user exists in Firestore
-    const user = await findOneDocument(COLLECTIONS.USERS, [
-      { field: 'email', operator: '==', value: normalizedEmail }
-    ]);
-
-    if (!user) {
-      // Don't reveal that user doesn't exist (security best practice)
-      return res.json({
-        success: true,
-        message: 'If an account with that email exists, a password reset link has been sent.',
-      });
-    }
-
-    // Create/Update user in Firebase Authentication if not exists
-    try {
-      await auth.getUserByEmail(normalizedEmail);
-    } catch (error) {
-      // User doesn't exist in Firebase Auth, create them
-      if (error.code === 'auth/user-not-found') {
-        await auth.createUser({
-          uid: user.id,
-          email: normalizedEmail,
-          password: user.password, // temporary, will be changed by reset
-        });
-      }
-    }
-
-    // Generate password reset link using Firebase Auth
-    const resetLink = await auth.generatePasswordResetLink(normalizedEmail, {
-      url: `${process.env.FRONTEND_URL || 'http://localhost:8081'}/login`,
-    });
-
-    console.log('✅ Password reset link generated for:', normalizedEmail);
-    console.log('🔗 Reset link:', resetLink);
-
-    // In production, Firebase sends the email automatically
-    // For development, you can return the link
+    // Firebase email sending is done client-side:
+    // sendPasswordResetEmail(auth, email)
+    // We return a generic success response to avoid user enumeration.
     res.json({
       success: true,
-      message: 'Password reset link has been generated. Check the console for the link.',
-      ...(process.env.NODE_ENV === 'development' ? { resetLink } : {}),
+      message: 'If an account with that email exists, a password reset email will be sent.',
     });
 
   } catch (error) {
@@ -655,65 +669,16 @@ router.post('/forgot-password', async (req, res) => {
   }
 });
 
-// @route   POST /api/auth/reset-password  
-// @desc    Reset password (handled by Firebase Auth on client side)
+// @route   POST /api/auth/reset-password
+// @desc    Disabled: Firebase Auth handles password reset via emailed link
 // @access  Public
 // NOTE: This endpoint is kept for backward compatibility
 // Firebase Auth handles password reset on the client side
 router.post('/reset-password', async (req, res) => {
   try {
-    const { email, newPassword } = req.body;
-
-    if (!email || !newPassword) {
-      return res.status(400).json({
-        success: false,
-        message: 'Please provide email and new password',
-      });
-    }
-
-    if (newPassword.length < 6) {
-      return res.status(400).json({
-        success: false,
-        message: 'Password must be at least 6 characters',
-      });
-    }
-
-    const normalizedEmail = email.trim().toLowerCase();
-
-    // Find user in Firestore
-    const user = await findOneDocument(COLLECTIONS.USERS, [
-      { field: 'email', operator: '==', value: normalizedEmail }
-    ]);
-
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        message: 'User not found',
-      });
-    }
-
-    // Hash new password
-    const hashedPassword = await hashPassword(newPassword);
-
-    // Update password in Firestore
-    await updateDocument(COLLECTIONS.USERS, user.id, {
-      password: hashedPassword,
-    });
-
-    // Update password in Firebase Auth
-    try {
-      await auth.updateUser(user.id, {
-        password: newPassword,
-      });
-    } catch (authError) {
-      console.log('Firebase Auth update skipped:', authError.message);
-    }
-
-    console.log('✅ Password reset successful for user:', user.email);
-
-    res.json({
-      success: true,
-      message: 'Password reset successful. You can now login with your new password.',
+    res.status(410).json({
+      success: false,
+      message: 'Password reset is handled by Firebase Auth. Please use the reset link sent by email.',
     });
 
   } catch (error) {
@@ -728,9 +693,10 @@ router.post('/reset-password', async (req, res) => {
 // @route   GET /api/auth/me
 // @desc    Get current user
 // @access  Private
-router.get('/me', protect, async (req, res) => {
+router.get('/me', verifyFirebaseToken, async (req, res) => {
   try {
-    const user = await getDocumentById(COLLECTIONS.USERS, req.user.id);
+    const firebaseUid = req.firebaseUser?.uid;
+    const user = await getUserByFirebaseUid(firebaseUid);
 
     if (!user) {
       return res.status(404).json({
@@ -738,6 +704,8 @@ router.get('/me', protect, async (req, res) => {
         message: 'User not found',
       });
     }
+
+    delete user.password;
 
     res.json({
       success: true,

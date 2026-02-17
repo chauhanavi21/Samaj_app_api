@@ -392,7 +392,7 @@ The system has **placeholder functions** for notifications in `utils/notificatio
 - `notifyAdminsNewPendingUser(user, reason)` - Notify admins of new pending user
 
 **To implement notifications later:**
-1. Integrate email service (already have nodemailer)
+1. Email is handled by Firebase Auth templates (no backend SMTP/Nodemailer)
 2. Add SMS service (Twilio, AWS SNS, etc.)
 3. Add push notifications (Firebase Cloud Messaging)
 4. Uncomment the code in `notificationService.js`

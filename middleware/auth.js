@@ -1,7 +1,40 @@
-const jwt = require('jsonwebtoken');
-const { getDocumentById, COLLECTIONS } = require('../config/firestore');
+const { auth, getDocumentById, findOneDocument, COLLECTIONS } = require('../config/firestore');
 
-// Protect routes - verify JWT token
+// Verify Firebase ID token (does not require Firestore user doc)
+exports.verifyFirebaseToken = async (req, res, next) => {
+  try {
+    let token;
+
+    if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
+      token = req.headers.authorization.split(' ')[1];
+    }
+
+    if (!token) {
+      return res.status(401).json({
+        success: false,
+        message: 'Not authorized to access this route',
+      });
+    }
+
+    try {
+      const decoded = await auth.verifyIdToken(token);
+      req.firebaseUser = decoded;
+      next();
+    } catch (error) {
+      return res.status(401).json({
+        success: false,
+        message: 'Not authorized to access this route',
+      });
+    }
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'Server error',
+    });
+  }
+};
+
+// Protect routes - verify Firebase ID token and load Firestore user
 exports.protect = async (req, res, next) => {
   try {
     let token;
@@ -19,11 +52,19 @@ exports.protect = async (req, res, next) => {
     }
 
     try {
-      // Verify token
-      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      // Verify Firebase ID token
+      const decoded = await auth.verifyIdToken(token);
+      req.firebaseUser = decoded;
 
-      // Get user from Firestore
-      const user = await getDocumentById(COLLECTIONS.USERS, decoded.id);
+      // Get user from Firestore.
+      // Preferred: doc id == Firebase uid.
+      // Back-compat: older users may have random doc ids and store the Firebase uid in `firebaseUid`.
+      let user = await getDocumentById(COLLECTIONS.USERS, decoded.uid);
+      if (!user) {
+        user = await findOneDocument(COLLECTIONS.USERS, [
+          { field: 'firebaseUid', operator: '==', value: decoded.uid },
+        ]);
+      }
 
       if (!user) {
         return res.status(401).json({
