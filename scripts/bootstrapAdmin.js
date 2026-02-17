@@ -16,8 +16,7 @@
 const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '../.env') });
 
-const bcrypt = require('bcryptjs');
-const { db, admin, COLLECTIONS, createDocument, queryDocuments } = require('../config/firestore');
+const { auth, COLLECTIONS, createDocument, queryDocuments, updateDocument } = require('../config/firestore');
 
 async function bootstrapAdmin() {
   try {
@@ -27,12 +26,6 @@ async function bootstrapAdmin() {
     const existingAdmins = await queryDocuments(COLLECTIONS.USERS, [
       { field: 'role', operator: '==', value: 'admin' }
     ]);
-
-    if (existingAdmins.length > 0) {
-      console.log('✅ Admin user already exists. No bootstrap needed.');
-      console.log(`   Found ${existingAdmins.length} admin(s)`);
-      return;
-    }
 
     // Get admin credentials from environment
     const adminEmail = process.env.ADMIN_EMAIL;
@@ -46,9 +39,11 @@ async function bootstrapAdmin() {
       return;
     }
 
+    const normalizedEmail = String(adminEmail).trim().toLowerCase();
+
     // Validate email format
     const emailRegex = /^\S+@\S+\.\S+$/;
-    if (!emailRegex.test(adminEmail)) {
+    if (!emailRegex.test(normalizedEmail)) {
       console.log('❌ Invalid admin email format');
       return;
     }
@@ -59,38 +54,88 @@ async function bootstrapAdmin() {
       return;
     }
 
+    if (existingAdmins.length > 0) {
+      console.log('ℹ️  Admin user already exists in Firestore. Ensuring Firebase Auth linkage...');
+      console.log(`   Found ${existingAdmins.length} admin(s)`);
+
+      // Link the first admin found.
+      const existing = existingAdmins[0];
+      let uid = existing.firebaseUid || null;
+
+      if (uid) {
+        try {
+          await auth.getUser(uid);
+        } catch (e) {
+          uid = null;
+        }
+      }
+
+      if (!uid) {
+        try {
+          const fb = await auth.getUserByEmail(normalizedEmail);
+          uid = fb.uid;
+        } catch (e) {
+          // ignore
+        }
+      }
+
+      if (!uid) {
+        const created = await auth.createUser({
+          email: normalizedEmail,
+          password: adminPassword,
+          displayName: adminName,
+        });
+        uid = created.uid;
+      } else {
+        await auth.updateUser(uid, { password: adminPassword, displayName: adminName, email: normalizedEmail });
+      }
+
+      if (!existing.firebaseUid || existing.firebaseUid !== uid) {
+        await updateDocument(COLLECTIONS.USERS, existing.id, { firebaseUid: uid });
+      }
+
+      console.log('✅ Admin Firebase Auth linkage ensured.');
+      console.log(`   Firebase UID: ${uid}`);
+      console.log(`   Firestore Admin Doc ID: ${existing.id}`);
+      return;
+    }
+
     console.log('📝 Creating admin user...');
-    console.log(`   Email: ${adminEmail}`);
+    console.log(`   Email: ${normalizedEmail}`);
     console.log(`   Name: ${adminName}`);
     console.log(`   Member ID: ${adminMemberId}`);
 
-    // Hash password
-    const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash(adminPassword, salt);
+    const created = await auth.createUser({
+      email: normalizedEmail,
+      password: adminPassword,
+      displayName: adminName,
+    });
+
+    const uid = created.uid;
 
     // Create admin user
     const adminData = {
       name: adminName,
-      email: adminEmail.toLowerCase(),
-      password: hashedPassword,
+      email: normalizedEmail,
       role: 'admin',
       memberId: adminMemberId,
       phone: '',
       accountStatus: 'approved',
       verificationStatus: 'verified',
       requiresAdminApproval: false,
+      firebaseUid: uid,
       notificationPreferences: {
         email: true,
         sms: false,
       },
     };
 
-    const newAdmin = await createDocument(COLLECTIONS.USERS, adminData);
+    const newAdmin = await createDocument(COLLECTIONS.USERS, adminData, uid);
 
     console.log('✅ Admin user created successfully!');
     console.log(`   User ID: ${newAdmin.id}`);
     console.log('\n🎉 You can now login with:');
-    console.log(`   Email: ${adminEmail}`);
+    console.log(`   Email: ${normalizedEmail}`);
     console.log(`   Password: ${adminPassword}`);
     console.log('\n⚠️  IMPORTANT: Change this password after first login!\n');
 
