@@ -13,6 +13,7 @@ const COLLECTIONS = {
   FAMILY_TREE: 'familyTree',
   INFORMATION: 'information',
   COMMITTEE_MEMBERS: 'committeeMembers',
+  GALLERY_IMAGES: 'galleryImages',
   SPONSORS: 'sponsors',
   SPIRITUAL_PLACES: 'spiritualPlaces',
   SPECIAL_OFFERS: 'specialOffers',

@@ -1,4 +1,6 @@
 const express = require('express');
+const fs = require('fs');
+const path = require('path');
 const { protect, authorize } = require('../middleware/auth');
 const {
   COLLECTIONS,
@@ -69,7 +71,7 @@ function requireFields(body, fields) {
 router.get('/committee', async (req, res) => {
   try {
     await listAdmin(COLLECTIONS.COMMITTEE_MEMBERS, req, res, {
-      searchFields: ['nameEn', 'nameHi', 'city', 'phone']
+      searchFields: ['nameEn', 'city', 'phone']
     });
   } catch (error) {
     console.error('Admin list committee error:', error);
@@ -79,14 +81,14 @@ router.get('/committee', async (req, res) => {
 
 router.post('/committee', async (req, res) => {
   try {
-    const missing = requireFields(req.body, ['nameEn', 'nameHi', 'phone', 'city']);
+    const missing = requireFields(req.body, ['nameEn', 'phone', 'city']);
     if (missing) {
       return res.status(400).json({ success: false, message: `Missing required field: ${missing}` });
     }
 
     const created = await createDocument(COLLECTIONS.COMMITTEE_MEMBERS, {
       nameEn: req.body.nameEn,
-      nameHi: req.body.nameHi,
+      ...(req.body.nameHi !== undefined ? { nameHi: req.body.nameHi } : {}),
       phone: req.body.phone,
       city: req.body.city,
       order: Number.isFinite(Number(req.body.order)) ? Number(req.body.order) : 0,
@@ -130,6 +132,87 @@ router.delete('/committee/:id', async (req, res) => {
   } catch (error) {
     console.error('Admin delete committee error:', error);
     res.status(500).json({ success: false, message: 'Failed to delete committee member' });
+  }
+});
+
+// -----------------------------
+// Gallery Images
+// -----------------------------
+
+router.get('/gallery', async (req, res) => {
+  try {
+    await listAdmin(COLLECTIONS.GALLERY_IMAGES, req, res, {
+      searchFields: ['title', 'imageUrl']
+    });
+  } catch (error) {
+    console.error('Admin list gallery error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch gallery images' });
+  }
+});
+
+router.post('/gallery', async (req, res) => {
+  try {
+    const missing = requireFields(req.body, ['imageUrl']);
+    if (missing) {
+      return res.status(400).json({ success: false, message: `Missing required field: ${missing}` });
+    }
+
+    const created = await createDocument(COLLECTIONS.GALLERY_IMAGES, {
+      title: String(req.body.title || '').trim(),
+      imageUrl: String(req.body.imageUrl || '').trim(),
+      order: Number.isFinite(Number(req.body.order)) ? Number(req.body.order) : 0,
+      isActive: req.body.isActive !== undefined ? !!req.body.isActive : true,
+    });
+
+    res.status(201).json({ success: true, data: created });
+  } catch (error) {
+    console.error('Admin create gallery error:', error);
+    res.status(500).json({ success: false, message: 'Failed to create gallery image' });
+  }
+});
+
+router.put('/gallery/:id', async (req, res) => {
+  try {
+    const updateData = {};
+    if (req.body.title !== undefined) updateData.title = String(req.body.title || '').trim();
+    if (req.body.imageUrl !== undefined) updateData.imageUrl = String(req.body.imageUrl || '').trim();
+    if (req.body.order !== undefined) updateData.order = Number(req.body.order) || 0;
+    if (req.body.isActive !== undefined) updateData.isActive = !!req.body.isActive;
+
+    const updated = await updateDocument(COLLECTIONS.GALLERY_IMAGES, req.params.id, updateData);
+    if (!updated) {
+      return res.status(404).json({ success: false, message: 'Gallery image not found' });
+    }
+
+    res.json({ success: true, data: updated });
+  } catch (error) {
+    console.error('Admin update gallery error:', error);
+    res.status(500).json({ success: false, message: 'Failed to update gallery image' });
+  }
+});
+
+router.delete('/gallery/:id', async (req, res) => {
+  try {
+    const existing = await getDocumentById(COLLECTIONS.GALLERY_IMAGES, req.params.id);
+    if (!existing) {
+      return res.status(404).json({ success: false, message: 'Gallery image not found' });
+    }
+
+    await deleteDocument(COLLECTIONS.GALLERY_IMAGES, req.params.id);
+
+    // Best-effort cleanup for locally hosted uploads
+    const imageUrl = String(existing.imageUrl || '');
+    if (imageUrl.startsWith('/uploads/')) {
+      const filename = imageUrl.replace('/uploads/', '');
+      const uploadsDir = path.join(__dirname, '../uploads');
+      const filePath = path.join(uploadsDir, filename);
+      fs.promises.unlink(filePath).catch(() => undefined);
+    }
+
+    res.json({ success: true, message: 'Deleted' });
+  } catch (error) {
+    console.error('Admin delete gallery error:', error);
+    res.status(500).json({ success: false, message: 'Failed to delete gallery image' });
   }
 });
 

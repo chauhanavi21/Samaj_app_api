@@ -224,7 +224,7 @@ const upload = multer({
   storage: storage,
   fileFilter: fileFilter,
   limits: {
-    fileSize: 5 * 1024 * 1024, // 5MB limit
+    fileSize: 2 * 1024 * 1024, // 2MB limit (free-tier friendly)
   },
 });
 
@@ -249,6 +249,7 @@ router.post('/upload-image', upload.single('image'), (req, res) => {
       data: {
         filename: req.file.filename,
         url: imageUrl,
+        imageUrl: imageUrl,
         size: req.file.size,
         mimetype: req.file.mimetype,
       },
@@ -269,7 +270,7 @@ router.use((error, req, res, next) => {
     if (error.code === 'LIMIT_FILE_SIZE') {
       return res.status(400).json({
         success: false,
-        message: 'File too large. Maximum size is 5MB.',
+        message: 'File too large. Maximum size is 2MB.',
       });
     }
     return res.status(400).json({

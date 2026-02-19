@@ -62,11 +62,22 @@ async function listWithPagination(collectionName, req, res, { searchFields = [] 
 router.get('/committee', async (req, res) => {
   try {
     await listWithPagination(COLLECTIONS.COMMITTEE_MEMBERS, req, res, {
-      searchFields: ['nameEn', 'nameHi', 'city', 'phone']
+      searchFields: ['nameEn', 'city', 'phone']
     });
   } catch (error) {
     console.error('List committee error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch committee members' });
+  }
+});
+
+router.get('/gallery', async (req, res) => {
+  try {
+    await listWithPagination(COLLECTIONS.GALLERY_IMAGES, req, res, {
+      searchFields: ['title']
+    });
+  } catch (error) {
+    console.error('List gallery error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch gallery images' });
   }
 });
 
